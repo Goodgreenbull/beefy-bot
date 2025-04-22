@@ -1,8 +1,17 @@
+from flask import Flask, request
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
+import os
+import telegram
 
-TOKEN = "7651594810:AAGg0e7rvr7FCIDqS7kPCB6flyxBaHYMvqQ"
+TOKEN = os.getenv("BOT_TOKEN")
+WEBHOOK_PATH = f"/webhook/{TOKEN}"
+WEBHOOK_URL = f"https://beefy-bot.onrender.com{WEBHOOK_PATH}"  
 
+app = Flask(__name__)
+application = ApplicationBuilder().token(TOKEN).build()
+
+# Command handlers
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Welcome to the Good Green Bull Herd! Type /help for commands.")
 
@@ -18,12 +27,26 @@ async def price(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def bullquote(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("“Hold the line. Green is coming.” – Good Green Bull")
 
-app = ApplicationBuilder().token(TOKEN).build()
+# Register command handlers
+application.add_handler(CommandHandler("start", start))
+application.add_handler(CommandHandler("help", help_command))
+application.add_handler(CommandHandler("contract", contract))
+application.add_handler(CommandHandler("price", price))
+application.add_handler(CommandHandler("bull", bullquote))
 
-app.add_handler(CommandHandler("start", start))
-app.add_handler(CommandHandler("help", help_command))
-app.add_handler(CommandHandler("contract", contract))
-app.add_handler(CommandHandler("price", price))
-app.add_handler(CommandHandler("bull", bullquote))
+# Health check route
+@app.route("/", methods=["GET"])
+def index():
+    return "Beefy Bot is online!"
 
-app.run_polling()
+# Webhook route
+@app.route(WEBHOOK_PATH, methods=["POST"])
+def webhook():
+    update = Update.de_json(request.get_json(force=True), application.bot)
+    application.update_queue.put(update)
+    return "ok"
+
+if __name__ == "__main__":
+    bot = telegram.Bot(token=TOKEN)
+    bot.set_webhook(WEBHOOK_URL)
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
