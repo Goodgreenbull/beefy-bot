@@ -1,4 +1,3 @@
 Flask[async]
-requests
-python-telegram-bot==20.8
 hypercorn
+python-telegram-bot==20.8
