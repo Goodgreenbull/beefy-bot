@@ -1,0 +1,5 @@
+{
+  "spam_filter": true,
+  "welcome_enabled": true,
+  "token_lookup_enabled": true
+}
