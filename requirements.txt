@@ -1,4 +1,4 @@
-Flask[async]
+python-telegram-bot==20.8
+Flask[async]==2.2.5
+gunicorn
 requests
-python-telegram-bot==20.6
-hypercorn
