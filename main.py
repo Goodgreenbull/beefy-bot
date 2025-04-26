@@ -1,14 +1,13 @@
-from flask import Flask, request
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 import os
-import telegram
 
+# --- Load Token ---
 TOKEN = os.getenv("BOT_TOKEN")
 WEBHOOK_PATH = f"/webhook/{TOKEN}"
 WEBHOOK_URL = f"https://beefy-bot.onrender.com{WEBHOOK_PATH}"
 
-app = Flask(__name__)
+# --- Build Application ---
 application = ApplicationBuilder().token(TOKEN).build()
 
 # --- Command Handlers ---
@@ -31,8 +30,7 @@ async def bullquote(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def settings(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Settings menu coming soon! Stay tuned!")
 
-# --- Register Command Handlers ---
-
+# --- Register Handlers ---
 application.add_handler(CommandHandler("start", start))
 application.add_handler(CommandHandler("help", help_command))
 application.add_handler(CommandHandler("price", price))
@@ -40,26 +38,8 @@ application.add_handler(CommandHandler("contract", contract))
 application.add_handler(CommandHandler("bull", bullquote))
 application.add_handler(CommandHandler("settings", settings))
 
-# --- Health Check ---
-
-@app.route("/", methods=["GET"])
-def index():
-    return "Beefy Bot is online!"
-
-# --- Webhook Endpoint ---
-
-@app.route(WEBHOOK_PATH, methods=["POST"])
-async def webhook():
-    json_data = request.get_json(force=True)
-    update = Update.de_json(json_data, application.bot)
-    await application.update_queue.put(update)
-    return "ok"
-
-# --- Start the Application (FINAL FIX) ---
-
+# --- Run Webhook Server ---
 if __name__ == "__main__":
-    bot = telegram.Bot(token=TOKEN)
-    bot.set_webhook(WEBHOOK_URL)
     application.run_webhook(
         listen="0.0.0.0",
         port=int(os.environ.get("PORT", 10000)),
