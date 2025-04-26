@@ -46,7 +46,7 @@ application.add_handler(CommandHandler("settings", settings))
 def index():
     return "Beefy Bot is online!"
 
-# --- Webhook Endpoint ---
+# --- Webhook Endpoint (SYNC) ---
 
 @app.route(WEBHOOK_PATH, methods=["POST"])
 def webhook():
@@ -54,8 +54,6 @@ def webhook():
     update = Update.de_json(json_data, application.bot)
     application.update_queue.put_nowait(update)
     return "ok"
-
-
 
 # --- Run App ---
 
