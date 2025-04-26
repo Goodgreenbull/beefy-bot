@@ -50,10 +50,11 @@ def index():
 
 @app.route(WEBHOOK_PATH, methods=["POST"])
 async def webhook():
-    json_data = request.get_json(force=True)  # <-- NO await here!
+    json_data = request.get_json(force=True)  # NO await!
     update = Update.de_json(json_data, application.bot)
     await application.update_queue.put(update)
     return "ok"
+
 
 # --- Run App ---
 
