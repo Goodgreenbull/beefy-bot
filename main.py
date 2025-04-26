@@ -46,18 +46,22 @@ application.add_handler(CommandHandler("settings", settings))
 def index():
     return "Beefy Bot is online!"
 
-# --- Webhook Endpoint (SYNC) ---
+# --- Webhook Endpoint ---
 
 @app.route(WEBHOOK_PATH, methods=["POST"])
-def webhook():
+async def webhook():
     json_data = request.get_json(force=True)
     update = Update.de_json(json_data, application.bot)
-    application.update_queue.put_nowait(update)
+    await application.update_queue.put(update)
     return "ok"
 
-# --- Run App ---
+# --- Start the Application (FINAL FIX) ---
 
 if __name__ == "__main__":
     bot = telegram.Bot(token=TOKEN)
     bot.set_webhook(WEBHOOK_URL)
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
+    application.run_webhook(
+        listen="0.0.0.0",
+        port=int(os.environ.get("PORT", 10000)),
+        webhook_url=WEBHOOK_URL
+    )
