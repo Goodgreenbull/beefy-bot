@@ -38,7 +38,7 @@ async def contract(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("📄 GGB Contract Address: 0xc2758c05916ba20b19358f1e96f597774e603050")
 
 async def bull(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("💬 \"Hold the line. Green is coming.\" - Good Green Bull 🐂💚")
+    await update.message.reply_text("\"Hold the line. Green is coming.\" - Good Green Bull 🐂💚")
 
 async def settings(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("⚙️ Settings menu coming soon!")
@@ -63,20 +63,20 @@ async def webhook():
     await application.update_queue.put(update)
     return "OK"
 
-# --- Startup Telegram Bot ---
+# --- Startup Async Bot ---
 
 async def start_bot():
     await application.initialize()
     await application.start()
     await application.bot.set_webhook(url=WEBHOOK_URL)
-    print(f"✅ Webhook successfully set to: {WEBHOOK_URL}")
+    print(f"✅ Webhook set to {WEBHOOK_URL}")
 
-# --- Run App ---
+# --- Main ---
 
 if __name__ == "__main__":
     loop = asyncio.get_event_loop()
     loop.create_task(start_bot())
     flask_app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
 
-# --- Tell Hypercorn where the app is ---
+# THIS LINE IS MANDATORY FOR Hypercorn to find the app:
 app = flask_app
