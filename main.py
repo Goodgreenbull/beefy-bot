@@ -55,10 +55,14 @@ def index():
     return "BeefyBot is online!"
 
 # --- Startup
+import asyncio
+
 async def main():
-    await application.bot.set_webhook(url=WEBHOOK_URL)
+    await application.initialize()
     await application.start()
-    await application.updater.start_webhook(listen="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
+    await application.bot.set_webhook(url=WEBHOOK_URL)
+    await application.updater.start_webhook(listen="0.0.0.0", port=int(os.environ.get("PORT", 10000)), webhook_url=WEBHOOK_URL)
+    await application.updater.idle()
 
 if __name__ == "__main__":
     asyncio.run(main())
