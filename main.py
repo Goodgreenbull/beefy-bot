@@ -1,14 +1,18 @@
 import os
 import asyncio
 from flask import Flask, request
-from telegram import Update
+from telegram import Update, Bot
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 
+# ENV variables
 TOKEN = os.getenv("BOT_TOKEN")
 WEBHOOK_PATH = f"/webhook/{TOKEN}"
 WEBHOOK_URL = f"https://beefy-bot.onrender.com{WEBHOOK_PATH}"
 
+# Flask app
 app = Flask(__name__)
+
+# Telegram app
 application = ApplicationBuilder().token(TOKEN).build()
 
 # --- Command Handlers ---
@@ -17,57 +21,59 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🐂 Welcome to the Good Green Bull Herd! Type /help for commands.")
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Available commands:\n/start\n/help\n/price\n/contract\n/bull\n/settings")
+    await update.message.reply_text(
+        "📜 Available commands:\n"
+        "/start - Join the Herd\n"
+        "/help - List Commands\n"
+        "/price - Check GGB Price\n"
+        "/contract - GGB Contract Address\n"
+        "/bull - Motivational Bull Quote\n"
+        "/settings - Coming Soon!"
+    )
 
 async def price(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Check the GGB token price here: https://tinyurl.com/GGBDex")
+    await update.message.reply_text("💵 Check the GGB price: https://tinyurl.com/GGBDex")
 
 async def contract(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("GGB Contract Address: 0xc2758c05916ba20b19358f1e96f597774e603050")
+    await update.message.reply_text("📄 GGB Contract Address: 0xc2758c05916ba20b19358f1e96f597774e603050")
 
-async def bullquote(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("\"Hold the line. Green is coming.\" - Good Green Bull")
+async def bull(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("\"Hold the line. Green is coming.\" - Good Green Bull 🐂💚")
 
 async def settings(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Settings menu coming soon! Stay tuned!")
+    await update.message.reply_text("⚙️ Settings menu coming soon!")
 
-# --- Register Commands ---
-
+# Registering handlers
 application.add_handler(CommandHandler("start", start))
 application.add_handler(CommandHandler("help", help_command))
 application.add_handler(CommandHandler("price", price))
 application.add_handler(CommandHandler("contract", contract))
-application.add_handler(CommandHandler("bull", bullquote))
+application.add_handler(CommandHandler("bull", bull))
 application.add_handler(CommandHandler("settings", settings))
 
-# --- Health Check ---
+# --- Flask Routes ---
 
 @app.route("/", methods=["GET"])
 def home():
-    return "Beefy Bot is alive and running!"
-
-# --- Webhook Route ---
+    return "Beefy Bot is Running! 🐂"
 
 @app.route(WEBHOOK_PATH, methods=["POST"])
 async def webhook():
-    """Telegram will send POST requests here."""
-    json_data = await request.get_json()
-    update = Update.de_json(json_data, application.bot)
-    await application.process_update(update)
-    return "ok"
+    update = Update.de_json(request.get_json(force=True), application.bot)
+    await application.update_queue.put(update)
+    return "OK"
 
-# --- Run the Bot ---
+# --- Startup async function ---
 
 async def main():
     await application.initialize()
     await application.start()
     await application.bot.set_webhook(url=WEBHOOK_URL)
-    await application.updater.start_webhook(
-        listen="0.0.0.0",
-        port=int(os.environ.get("PORT", 10000)),
-        webhook_url=WEBHOOK_URL
-    )
-    await application.updater.idle()
+    print(f"✅ Webhook set to: {WEBHOOK_URL}")
+
+# --- Run if file is main ---
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    loop = asyncio.get_event_loop()
+    loop.create_task(main())
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
