@@ -1,5 +1,3 @@
-# File: main.py
-
 import os
 import asyncio
 from flask import Flask, request
@@ -14,7 +12,7 @@ WEBHOOK_URL = f"https://beefy-bot.onrender.com{WEBHOOK_PATH}"
 # --- Flask App ---
 app = Flask(__name__)
 
-# --- Telegram Bot Application ---
+# --- Telegram Bot App ---
 application = ApplicationBuilder().token(TOKEN).build()
 
 # --- Command Handlers ---
@@ -45,7 +43,7 @@ async def bull(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def settings(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("⚙️ Settings menu coming soon!")
 
-# --- Register Command Handlers ---
+# --- Register Handlers ---
 application.add_handler(CommandHandler("start", start))
 application.add_handler(CommandHandler("help", help_command))
 application.add_handler(CommandHandler("price", price))
@@ -56,23 +54,26 @@ application.add_handler(CommandHandler("settings", settings))
 # --- Flask Routes ---
 
 @app.route("/", methods=["GET"])
-def index():
+def home():
     return "🐂 Beefy Bot is Alive!"
 
 @app.route(WEBHOOK_PATH, methods=["POST"])
 def webhook():
-    """Receive updates from Telegram and process them."""
-    update = Update.de_json(request.get_json(force=True), application.bot)
-    asyncio.create_task(application.process_update(update))
-    return "OK", 200
+    """Process Telegram updates synchronously."""
+    json_data = request.get_json(force=True)
+    update = Update.de_json(json_data, application.bot)
+    # Instead of creating async task, push into queue manually
+    application.update_queue.put_nowait(update)
+    return "OK"
 
-# --- Run Flask ---
+# --- Startup ---
+
+async def startup():
+    await application.initialize()
+    await application.bot.set_webhook(url=WEBHOOK_URL)
+    print(f"✅ Webhook set at {WEBHOOK_URL}")
+
 if __name__ == "__main__":
-    async def setup_webhook():
-        await application.initialize()
-        await application.bot.set_webhook(url=WEBHOOK_URL)
-        print(f"✅ Webhook set at {WEBHOOK_URL}")
-
     loop = asyncio.get_event_loop()
-    loop.run_until_complete(setup_webhook())
+    loop.run_until_complete(startup())
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
