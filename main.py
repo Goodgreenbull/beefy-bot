@@ -1,7 +1,6 @@
-# File: main.py
+# main.py
 
 import os
-import asyncio
 from flask import Flask, request
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
@@ -62,17 +61,19 @@ def index():
 @app.route(WEBHOOK_PATH, methods=["POST"])
 def webhook():
     """Receive updates from Telegram and process them."""
-    update = Update.de_json(request.get_json(force=True), application.bot)
-    asyncio.run(application.process_update(update))
-    return "OK"
+    if request.method == "POST":
+        update = Update.de_json(request.get_json(force=True), application.bot)
+        application.create_task(application.process_update(update))
+        return "OK"
 
-# --- Set webhook and run app ---
-async def setup():
-    await application.initialize()
-    await application.start()
-    await application.bot.set_webhook(url=WEBHOOK_URL)
+# --- Set Webhook at Startup ---
+
+@app.before_first_request
+def before_first_request():
+    application.initialize()
+    application.bot.set_webhook(url=WEBHOOK_URL)
     print(f"✅ Webhook set at {WEBHOOK_URL}")
 
+# --- Run Flask ---
 if __name__ == "__main__":
-    asyncio.run(setup())
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
