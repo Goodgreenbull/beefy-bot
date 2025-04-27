@@ -1,22 +1,19 @@
 import os
-import asyncio
 from flask import Flask, request
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 
-# --- Environment Variables ---
-TOKEN = os.getenv("BOT_TOKEN")
-WEBHOOK_PATH = f"/webhook/{TOKEN}"
-WEBHOOK_URL = f"https://beefy-bot.onrender.com{WEBHOOK_PATH}"
+# --- Load Environment Variables ---
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+WEBHOOK_URL = f"https://beefy-bot.onrender.com/webhook/{BOT_TOKEN}"
 
-# --- Flask App ---
+# --- Initialize Flask App ---
 app = Flask(__name__)
 
-# --- Telegram Bot App ---
-application = ApplicationBuilder().token(TOKEN).build()
+# --- Initialize Telegram Bot App ---
+application = ApplicationBuilder().token(BOT_TOKEN).build()
 
-# --- Command Handlers ---
-
+# --- Define Command Handlers ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🐂 Welcome to the Good Green Bull Herd! Type /help for commands.")
 
@@ -54,26 +51,24 @@ application.add_handler(CommandHandler("settings", settings))
 # --- Flask Routes ---
 
 @app.route("/", methods=["GET"])
-def home():
-    return "🐂 Beefy Bot is Alive!"
+def index():
+    return "🐂 Beefy Bot is Online!"
 
-@app.route(WEBHOOK_PATH, methods=["POST"])
-def webhook():
-    """Process Telegram updates synchronously."""
-    json_data = request.get_json(force=True)
-    update = Update.de_json(json_data, application.bot)
-    # Instead of creating async task, push into queue manually
-    application.update_queue.put_nowait(update)
-    return "OK"
+@app.route(f"/webhook/{BOT_TOKEN}", methods=["POST"])
+def telegram_webhook():
+    """Receive webhook POST from Telegram and process."""
+    if request.method == "POST":
+        update = Update.de_json(request.get_json(force=True), application.bot)
+        application.process_update(update)
+    return "OK", 200
 
-# --- Startup ---
+# --- Setup Webhook ---
+@app.before_first_request
+def set_webhook():
+    import asyncio
+    asyncio.run(application.bot.set_webhook(url=WEBHOOK_URL))
+    print(f"✅ Webhook set: {WEBHOOK_URL}")
 
-async def startup():
-    await application.initialize()
-    await application.bot.set_webhook(url=WEBHOOK_URL)
-    print(f"✅ Webhook set at {WEBHOOK_URL}")
-
+# --- Run App ---
 if __name__ == "__main__":
-    loop = asyncio.get_event_loop()
-    loop.run_until_complete(startup())
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
