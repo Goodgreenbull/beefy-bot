@@ -60,19 +60,19 @@ def index():
     return "🐂 Beefy Bot is Alive!"
 
 @app.route(WEBHOOK_PATH, methods=["POST"])
-async def webhook():
+def webhook():
     """Receive updates from Telegram and process them."""
-    if request.method == "POST":
-        update = Update.de_json(request.get_json(force=True), application.bot)
-        await application.process_update(update)
-        return "OK"
+    update = Update.de_json(request.get_json(force=True), application.bot)
+    asyncio.run(application.process_update(update))
+    return "OK"
 
-@app.before_first_request
-def set_webhook():
-    """Set the webhook on bot startup."""
-    asyncio.run(application.bot.set_webhook(url=WEBHOOK_URL))
+# --- Set webhook and run app ---
+async def setup():
+    await application.initialize()
+    await application.start()
+    await application.bot.set_webhook(url=WEBHOOK_URL)
     print(f"✅ Webhook set at {WEBHOOK_URL}")
 
-# --- Run Flask ---
 if __name__ == "__main__":
+    asyncio.run(setup())
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
