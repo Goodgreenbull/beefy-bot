@@ -10,7 +10,7 @@ WEBHOOK_PATH = f"/webhook/{TOKEN}"
 WEBHOOK_URL = f"https://beefy-bot.onrender.com{WEBHOOK_PATH}"
 
 # --- Flask App ---
-app = Flask(__name__)
+app = Flask(__name__)  # ✅ Correct: Hypercorn looks for 'app'
 
 # --- Telegram Bot Application ---
 application = ApplicationBuilder().token(TOKEN).build()
@@ -43,7 +43,7 @@ async def bullquote(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def settings(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("⚙️ Settings menu coming soon!")
 
-# --- Register Command Handlers ---
+# --- Register Handlers ---
 application.add_handler(CommandHandler("start", start))
 application.add_handler(CommandHandler("help", help_command))
 application.add_handler(CommandHandler("price", price))
@@ -51,7 +51,7 @@ application.add_handler(CommandHandler("contract", contract))
 application.add_handler(CommandHandler("bull", bullquote))
 application.add_handler(CommandHandler("settings", settings))
 
-# --- Webhook Receiver Endpoint ---
+# --- Webhook Receiver ---
 @app.route(WEBHOOK_PATH, methods=["POST"])
 async def telegram_webhook():
     json_data = request.get_json(force=True)
@@ -59,12 +59,12 @@ async def telegram_webhook():
     await application.update_queue.put(update)
     return "ok"
 
-# --- Health Check Endpoint ---
+# --- Health Check ---
 @app.route("/", methods=["GET"])
 def index():
-    return "✅ Beefy Bot is running!"
+    return "✅ Beefy Bot is running strong!"
 
-# --- Main Async Start ---
+# --- Async Main Start ---
 async def main():
     await application.initialize()
     await application.start()
