@@ -4,15 +4,15 @@ from flask import Flask, request
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 
-# Environment variables
+# --- ENV Variables ---
 TOKEN = os.getenv("BOT_TOKEN")
 WEBHOOK_PATH = f"/webhook/{TOKEN}"
 WEBHOOK_URL = f"https://beefy-bot.onrender.com{WEBHOOK_PATH}"
 
-# Flask app
+# --- Flask app ---
 app = Flask(__name__)
 
-# Telegram app
+# --- Telegram app ---
 application = ApplicationBuilder().token(TOKEN).build()
 
 # --- Command Handlers ---
@@ -51,19 +51,20 @@ application.add_handler(CommandHandler("contract", contract))
 application.add_handler(CommandHandler("bull", bull))
 application.add_handler(CommandHandler("settings", settings))
 
-# --- Flask routes ---
+# --- Flask Routes ---
 
 @app.route("/", methods=["GET"])
 def home():
-    return "Beefy Bot is Running! 🐂"
+    return "🐂 Beefy Bot is Running!"
 
 @app.route(WEBHOOK_PATH, methods=["POST"])
-async def webhook():
+def webhook():
     update = Update.de_json(request.get_json(force=True), application.bot)
-    await application.update_queue.put(update)
+    asyncio.run(application.update_queue.put(update))
     return "OK"
 
-# --- Start Webhook Setup ---
+# --- Setup Webhook and Run App ---
+
 async def setup():
     await application.initialize()
     await application.start()
