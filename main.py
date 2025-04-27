@@ -1,16 +1,20 @@
+from flask import Flask, request
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 import os
+import asyncio
 
-# --- Load Token ---
 TOKEN = os.getenv("BOT_TOKEN")
 WEBHOOK_PATH = f"/webhook/{TOKEN}"
 WEBHOOK_URL = f"https://beefy-bot.onrender.com{WEBHOOK_PATH}"
 
-# --- Build Application ---
+# --- Create Flask app
+flask_app = Flask(__name__)
+
+# --- Create Telegram Application
 application = ApplicationBuilder().token(TOKEN).build()
 
-# --- Command Handlers ---
+# --- Command Handlers
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Welcome to the Good Green Bull Herd! Type /help for commands.")
@@ -30,7 +34,7 @@ async def bullquote(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def settings(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Settings menu coming soon! Stay tuned!")
 
-# --- Register Handlers ---
+# --- Add Handlers
 application.add_handler(CommandHandler("start", start))
 application.add_handler(CommandHandler("help", help_command))
 application.add_handler(CommandHandler("price", price))
@@ -38,10 +42,23 @@ application.add_handler(CommandHandler("contract", contract))
 application.add_handler(CommandHandler("bull", bullquote))
 application.add_handler(CommandHandler("settings", settings))
 
-# --- Run Webhook Server ---
+# --- Webhook route for Telegram
+@flask_app.route(WEBHOOK_PATH, methods=["POST"])
+async def telegram_webhook():
+    update = Update.de_json(request.get_json(force=True), application.bot)
+    await application.update_queue.put(update)
+    return "ok"
+
+# --- Health check route
+@flask_app.route("/", methods=["GET"])
+def index():
+    return "BeefyBot is online!"
+
+# --- Startup
+async def main():
+    await application.bot.set_webhook(url=WEBHOOK_URL)
+    await application.start()
+    await application.updater.start_webhook(listen="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
+
 if __name__ == "__main__":
-    application.run_webhook(
-        listen="0.0.0.0",
-        port=int(os.environ.get("PORT", 10000)),
-        webhook_url=WEBHOOK_URL
-    )
+    asyncio.run(main())
