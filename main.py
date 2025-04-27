@@ -1,18 +1,20 @@
+# File: main.py
+
 import os
 import asyncio
 from flask import Flask, request
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 
-# --- ENV Variables ---
+# --- Environment Variables ---
 TOKEN = os.getenv("BOT_TOKEN")
 WEBHOOK_PATH = f"/webhook/{TOKEN}"
 WEBHOOK_URL = f"https://beefy-bot.onrender.com{WEBHOOK_PATH}"
 
-# --- Flask app ---
+# --- Flask App ---
 app = Flask(__name__)
 
-# --- Telegram app ---
+# --- Telegram Bot App ---
 application = ApplicationBuilder().token(TOKEN).build()
 
 # --- Command Handlers ---
@@ -43,7 +45,7 @@ async def bull(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def settings(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("⚙️ Settings menu coming soon!")
 
-# --- Register Command Handlers ---
+# --- Register Handlers ---
 application.add_handler(CommandHandler("start", start))
 application.add_handler(CommandHandler("help", help_command))
 application.add_handler(CommandHandler("price", price))
@@ -54,23 +56,23 @@ application.add_handler(CommandHandler("settings", settings))
 # --- Flask Routes ---
 
 @app.route("/", methods=["GET"])
-def home():
-    return "🐂 Beefy Bot is Running!"
+def index():
+    return "🐂 Beefy Bot is Alive!"
 
 @app.route(WEBHOOK_PATH, methods=["POST"])
-def webhook():
-    update = Update.de_json(request.get_json(force=True), application.bot)
-    asyncio.run(application.update_queue.put(update))
-    return "OK"
+async def webhook():
+    """Receive updates from Telegram and process them."""
+    if request.method == "POST":
+        update = Update.de_json(request.get_json(force=True), application.bot)
+        await application.process_update(update)
+        return "OK"
 
-# --- Setup Webhook and Run App ---
-
-async def setup():
-    await application.initialize()
-    await application.start()
-    await application.bot.set_webhook(url=WEBHOOK_URL)
+@app.before_first_request
+def set_webhook():
+    """Set the webhook on bot startup."""
+    asyncio.run(application.bot.set_webhook(url=WEBHOOK_URL))
     print(f"✅ Webhook set at {WEBHOOK_URL}")
 
+# --- Run Flask ---
 if __name__ == "__main__":
-    asyncio.run(setup())
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
