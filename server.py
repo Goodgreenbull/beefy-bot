@@ -39,7 +39,7 @@ async def bull(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def settings(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("⚙️ Settings menu coming soon!")
 
-# Register commands
+# Register handlers
 application.add_handler(CommandHandler("start", start))
 application.add_handler(CommandHandler("help", help_command))
 application.add_handler(CommandHandler("price", price))
@@ -50,12 +50,13 @@ application.add_handler(CommandHandler("settings", settings))
 # --- Webhook Route ---
 @app.route("/", methods=["GET"])
 def home():
-    return "Beefy Bot is online! 🐂"
+    return "Beefy Bot is alive! 🐂"
 
 @app.route(WEBHOOK_PATH, methods=["POST"])
-async def webhook():
+def webhook():
+    """Handle Telegram webhook."""
     update = Update.de_json(request.get_json(force=True), bot)
-    await application.process_update(update)
+    asyncio.run(application.process_update(update))
     return "ok"
 
 async def set_webhook():
@@ -64,6 +65,5 @@ async def set_webhook():
 
 # --- Main ---
 if __name__ == "__main__":
-    loop = asyncio.get_event_loop()
-    loop.run_until_complete(set_webhook())
+    asyncio.run(set_webhook())
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
