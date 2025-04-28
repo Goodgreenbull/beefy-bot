@@ -1,2 +1,2 @@
-Flask
-python-telegram-bot[webhooks]==20.8
+python-telegram-bot==20.8
+Flask==3.1.0
