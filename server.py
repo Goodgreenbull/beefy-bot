@@ -113,37 +113,24 @@ async def settings(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     keyboard = [
         [InlineKeyboardButton("✅ Price Alerts ON/OFF", callback_data='toggle_price')],
-        [InlineKeyboardButton("❌ Anti-Spam ON/OFF", callback_data='toggle_spam')],
-        [InlineKeyboardButton("➕ Add Bull Quote", callback_data='add_quote')],
-        [InlineKeyboardButton("🎭 Toggle Personality", callback_data='toggle_personality')]
+        [InlineKeyboardButton("❌ Anti-Spam ON/OFF", callback_data='toggle_spam')]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     await update.message.reply_text("⚙️ Admin Settings:", reply_markup=reply_markup)
 
-# Track beefy personality state
-beefy_personality = True
-
 async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-
-    global spam_detection_enabled, beefy_personality
 
     if query.data == 'bull':
         await bull(update, context)
     elif query.data == 'price':
         await price(update, context)
     elif query.data == 'toggle_spam':
+        global spam_detection_enabled
         spam_detection_enabled = not spam_detection_enabled
         state = "ON" if spam_detection_enabled else "OFF"
         await query.edit_message_text(text=f"Anti-Spam filter is now {state}.")
-    elif query.data == 'toggle_personality':
-        beefy_personality = not beefy_personality
-        state = "ENABLED" if beefy_personality else "DISABLED"
-        await query.edit_message_text(text=f"Beefy's personality replies are now {state}.")
-    elif query.data == 'add_quote':
-        await query.edit_message_text(text="Send me the new bull quote now. 🐂")
-        context.user_data['awaiting_quote'] = True
     else:
         await query.edit_message_text(text="Settings toggled (placeholder)")
 
@@ -161,19 +148,10 @@ async def detect_spam(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await context.bot.restrict_chat_member(chat_id, user_id, permissions={})
         await context.bot.send_message(chat_id, text=f"User {user_id} muted for spamming.")
 
-# --- Personality + Quote Add Handler ---
-async def text_responder(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if context.user_data.get('awaiting_quote'):
-        new_quote = update.message.text.strip()
-        if new_quote:
-            bull_quotes.append(new_quote)
-            await update.message.reply_text("✅ New bull quote added!")
-        else:
-            await update.message.reply_text("❌ Invalid quote.")
-        context.user_data['awaiting_quote'] = False
-        return
-
-    if beefy_personality and "/beefy" in update.message.text.lower():
+# --- Fun BeefyBot Replies ---
+async def beefy_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    message = update.message.text.lower()
+    if "/beefy" in message:
         replies = [
             "I don’t know about these other meme guys, but the $GGB charts are looking GREEN and BEEFY!",
             "We build. We bull. We buy $GGB. No distractions. ",
@@ -201,14 +179,6 @@ async def webhook():
     return "OK"
 
 # --- Main Startup ---
-async def main():
-    await application.initialize()
-    await application.bot.set_webhook(url=WEBHOOK_URL)
-    print(f"✅ Webhook correctly set: {WEBHOOK_URL}")
-    await application.start()
-    await application.updater.start_polling()
-    await application.updater.idle()
-
 if __name__ == "__main__":
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("help", help_command))
@@ -219,8 +189,11 @@ if __name__ == "__main__":
     application.add_handler(CommandHandler("settings", settings))
     application.add_handler(CallbackQueryHandler(button))
 
-    application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), text_responder))
-    application.add_handler(MessageHandler(filters.Regex("(?i)^/beefy"), text_responder))
+    application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), detect_spam))
+    application.add_handler(MessageHandler(filters.Regex("(?i)^/beefy"), beefy_chat))
 
     nest_asyncio.apply()
-    asyncio.run(main())
+    asyncio.run(application.initialize())
+    asyncio.run(application.bot.set_webhook(url=WEBHOOK_URL))
+    print(f"✅ Webhook correctly set: {WEBHOOK_URL}")
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
