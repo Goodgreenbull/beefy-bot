@@ -406,23 +406,24 @@ async def resume_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def testconn_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user):
         await update.message.reply_text("⛔ Admin only."); return
-    lines = ["🔧 *Connection Test*\n",
+    lines = ["🔧 Connection Test\n",
         f"{'✅' if POLYMARKET_PK else '❌'} PRIVATE_KEY",
         f"{'✅' if POLYMARKET_WALLET else '❌'} WALLET_ADDRESS",
         f"{'✅' if PERSONAL_WALLET else '❌'} PERSONAL_WALLET",
         f"Mode: {TRADING_MODE} | CLOB: {'✅' if clob_ready else '❌'}"]
     if clob_ready:
         bal = await clob_balance()
-        lines.append(f"Balance: {'${:.2f}'.format(bal) if bal else 'failed'}")
+        lines.append(f"Balance: ${bal:.2f}" if bal else "Balance: failed")
     try:
         mkts = await fetch_poly_markets()
-        lines.append(f"Polymarket: {len(mkts)} markets")
-    except Exception as e: lines.append(f"Polymarket: {e}")
+        lines.append(f"✅ Polymarket: {len(mkts)} markets")
+    except Exception as e: lines.append(f"❌ Polymarket: {e}")
     try:
         p = await fetch_btc_eth()
-        lines.append(f"CoinGecko: BTC ${p.get('bitcoin',{}).get('usd',0):,.0f}")
-    except Exception as e: lines.append(f"CoinGecko: {e}")
-    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+        btc_usd = p.get("bitcoin", {}).get("usd", 0)
+        lines.append(f"✅ CoinGecko: BTC ${btc_usd:,.0f}")
+    except Exception as e: lines.append(f"❌ CoinGecko: {e}")
+    await update.message.reply_text("\n".join(lines))
 
 async def golive_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user):
