@@ -504,12 +504,9 @@ async def startup():
     print(f"✅ Webhook: {WEBHOOK_URL}")
     await init_clob()
     scheduler = AsyncIOScheduler(timezone="UTC")
-    scheduler.add_job(lambda: asyncio.ensure_future(safe_job(run_signal_scan, 30)),
-                      "interval", seconds=60)
-    scheduler.add_job(lambda: asyncio.ensure_future(safe_job(send_daily_balance, 15)),
-                      "cron", hour=8, minute=5)
-    scheduler.add_job(lambda: asyncio.ensure_future(safe_job(self_ping, 10)),
-                      "interval", minutes=10)
+    scheduler.add_job(safe_job, "interval", seconds=60, args=[run_signal_scan, 30])
+    scheduler.add_job(safe_job, "cron", hour=8, minute=5, args=[send_daily_balance, 15])
+    scheduler.add_job(safe_job, "interval", minutes=10, args=[self_ping, 10])
     scheduler.start()
     print(f"✅ Scheduler: signals 60s | balance 08:05 | ping 10m")
     print(f"📋 Mode: {TRADING_MODE} | CLOB: {'ready' if clob_ready else 'paper'}")
