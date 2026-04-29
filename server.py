@@ -1,249 +1,515 @@
-import os,asyncio,random,aiohttp
-from datetime import datetime,timezone,timedelta
-from quart import Quart,request
-from telegram import Update,InlineKeyboardButton,InlineKeyboardMarkup,ChatPermissions,ChatMember
-from telegram.ext import ApplicationBuilder,CommandHandler,CallbackQueryHandler,MessageHandler,ChatMemberHandler,ContextTypes,filters
+# GGB Beefy Bot — Polymarket Quant Trading Engine
+# Built on Base | Powered by Beefy 🐂
+
+import os, asyncio, random, math, aiohttp
+from datetime import datetime, timezone, timedelta
+from quart import Quart, request
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-import signals
 
-TOKEN=os.getenv("BOT_TOKEN"); BASESCAN_API_KEY=os.getenv("BASESCAN_API_KEY")
-TELEGRAM_GROUP_ID=os.getenv("TELEGRAM_GROUP_ID")
-WEBHOOK_PATH=f"/webhook/{TOKEN}"; WEBHOOK_URL=f"https://beefy-bot.onrender.com{WEBHOOK_PATH}"
-GGB_CONTRACT="0xc2758c05916ba20b19358f1e96f597774e603050"
+# ── Config ───────────────────────────────────────────────────────────────────
+TOKEN             = os.getenv("BOT_TOKEN")
+BASESCAN_API_KEY  = os.getenv("BASESCAN_API_KEY")
+ADMIN_USERNAME    = os.getenv("ADMIN_USERNAME", "JS0nbase")
+ADMIN_CHAT_ID     = os.getenv("ADMIN_CHAT_ID")
+TELEGRAM_GROUP_ID = os.getenv("TELEGRAM_GROUP_ID")
+POLYMARKET_PK     = os.getenv("POLYMARKET_PRIVATE_KEY")
+POLYMARKET_WALLET = os.getenv("POLYMARKET_WALLET_ADDRESS")
+PERSONAL_WALLET   = os.getenv("YOUR_PERSONAL_WALLET")
+TRADING_MODE      = os.getenv("TRADING_MODE", "paper")
+WEBHOOK_PATH      = f"/webhook/{TOKEN}"
+WEBHOOK_URL       = f"https://beefy-bot.onrender.com{WEBHOOK_PATH}"
 
-app=Quart(__name__); application=ApplicationBuilder().token(TOKEN).build()
+app         = Quart(__name__)
+application = ApplicationBuilder().token(TOKEN).build()
 
-user_spam_tracker={}; recent_bull_indices=[]; gm_tracker={}; gm_tracker_date=None
+# ── State ────────────────────────────────────────────────────────────────────
+polymarket_enabled = False
+signal_bankroll    = 50.0
+signal_peak        = 50.0
+signal_trades      = []
+signal_consecutive_losses = 0
+signal_is_paused   = False
+signal_pause_until = 0.0
+btc_price_history  = []
+eth_price_history  = []
+tracked_markets    = {}
+clob_client        = None
+clob_ready         = False
+trading_paused     = False
 
-BULL=[
-    "The market rewards patience. The builder rewards himself. 🐂💚",
-    "Quiet stretches separate the builders from the tourists. 🐂💚",
-    "Ship ugly. Fix fast. Ship again. 🛠️💚",
-    "Nobody's watching the process. That's the point. 🐂🌿",
-    "You don't outwork the market. You outlast it. 🐂💚",
-    "Conviction is a practice, not a feeling. 💚🐂",
-    "Most quit before the compound kicks in. 🐂💚",
-    "Build mode doesn't need an announcement. 🛠️🐂",
-    "Progress doesn't ask for permission. 💚🐂",
-    "Hold the line. The line is the work. 🐂💚",
-    "Momentum is just small moves that didn't stop. 📈🐂",
-    "Systems beat sprints every time. 📈🐂",
-    "Build for the version of yourself still here in two years. 🐂💚",
-    "The grind is not the goal. The grind is the gate. 💚🐂",
-    "Locked in. Herd strong. We move. 🐂💚",
-]
+# ── Signal Config ────────────────────────────────────────────────────────────
+EV_THRESH   = 0.12;  FEE_PCT    = 0.02;  MIN_CONF   = 0.12
+MIN_CORR    = 0.80;  KELLY_FRAC = 0.25;  MAX_BET    = 0.08
+TRAIL_STOP  = 0.20;  COOLDOWN   = 900;   PRIOR_DECAY = 0.95
+MOVE_THRESH = 0.001
 
-WQ=[
-    "What's the one thing you're shipping this week? 🛠️",
-    "Best Base project you've used this week? 👇",
-    "If you had to keep only one project — what stays? 🐂",
-    "One tool that genuinely changed how you build? 👇",
-    "Biggest lesson from your last build? 👇",
-    "What would make you check this group every day? 🐂💚",
-    "One word for your build mindset this week 👇",
-    "Most underrated thing happening on Base right now? 🐂",
-    "If GGB dropped a product tomorrow — what would it be? 👇",
-    "What does winning look like for you in 90 days? 🐂💚",
-]
+LIKELIHOOD = {
+    1:  {"big_up":0.72,"small_up":0.58,"flat":0.50,"small_down":0.42,"big_down":0.28},
+    5:  {"big_up":0.78,"small_up":0.62,"flat":0.50,"small_down":0.38,"big_down":0.22},
+    15: {"big_up":0.82,"small_up":0.65,"flat":0.50,"small_down":0.35,"big_down":0.18},
+}
 
-def get_quote():
-    global recent_bull_indices
-    avail=[i for i in range(len(BULL)) if i not in recent_bull_indices]
-    if not avail: recent_bull_indices,avail=[],list(range(len(BULL)))
-    idx=random.choice(avail); recent_bull_indices.append(idx)
-    if len(recent_bull_indices)>7: recent_bull_indices.pop(0)
-    return BULL[idx]
+# ── Helpers ──────────────────────────────────────────────────────────────────
+def is_admin(user): return user.username == ADMIN_USERNAME.lstrip("@")
 
-async def fetch_price():
+def classify(r):
+    if r > 0.01: return "big_up"
+    if r > 0.002: return "small_up"
+    if r < -0.01: return "big_down"
+    if r < -0.002: return "small_down"
+    return "flat"
+
+def likelihood(r, w, corr=1.0):
+    base = LIKELIHOOD.get(w, LIKELIHOOD[5])[classify(r)]
+    return max(0.01, min(0.99, 0.5 + (base - 0.5) * corr))
+
+def bayes(prior, r, w, corr):
+    ph = 0.5 + (prior - 0.5) * PRIOR_DECAY
+    peh = likelihood(r, w, corr)
+    pe = peh * ph + (1 - peh) * (1 - ph)
+    return max(0.05, min(0.95, (peh * ph) / max(pe, 1e-10)))
+
+def ev_gap(p, mkt): return (p - mkt) - mkt * FEE_PCT
+
+def kelly(p, mkt):
+    if mkt <= 0 or mkt >= 1: return 0.0
+    odds = 1 / mkt - 1
+    return max(0.0, min(1.0, (p * odds - (1 - p)) / odds)) if odds > 0 else 0.0
+
+def kl_div(p, q):
+    p, q = max(.001, min(.999, p)), max(.001, min(.999, q))
+    return p * math.log(p / q) + (1 - p) * math.log((1 - p) / (1 - q))
+
+def calc_bet(bankroll, p, mkt):
+    return max(0, min(kelly(p, mkt) * KELLY_FRAC * bankroll, bankroll * MAX_BET, bankroll - 2.0))
+
+# ── CLOB Client ──────────────────────────────────────────────────────────────
+async def init_clob():
+    global clob_client, clob_ready
+    if not POLYMARKET_PK or TRADING_MODE != "live":
+        print(f"📊 Mode: {TRADING_MODE} (CLOB not initialised)"); return
     try:
-        async with aiohttp.ClientSession() as s:
-            async with s.get(f"https://api.dexscreener.com/latest/dex/tokens/{GGB_CONTRACT}",timeout=aiohttp.ClientTimeout(total=10)) as r:
-                pair=(await r.json())["pairs"][0]
-                return float(pair["priceUsd"]),float(pair.get("priceChange",{}).get("h24",0))
-    except: return None,None
+        from py_clob_client.client import ClobClient
+        clob_client = ClobClient("https://clob.polymarket.com", key=POLYMARKET_PK,
+                                  chain_id=137, signature_type=0, funder=POLYMARKET_WALLET)
+        clob_client.set_api_creds(clob_client.create_or_derive_api_creds())
+        clob_ready = True
+        print(f"✅ CLOB ready — {POLYMARKET_WALLET[:10]}...")
+    except Exception as e:
+        print(f"⚠️ CLOB init failed: {e}")
 
-async def fetch_balance(address):
+async def clob_order(token_id, side, price, size):
+    if not clob_ready or not clob_client or trading_paused: return None
     try:
-        async with aiohttp.ClientSession() as s:
-            async with s.get(f"https://api.basescan.org/api?module=account&action=tokenbalance&contractaddress={GGB_CONTRACT}&address={address}&tag=latest&apikey={BASESCAN_API_KEY}",timeout=aiohttp.ClientTimeout(total=10)) as r:
-                d=await r.json()
-                if d["status"]=="1": return int(d["result"])/10**18
-    except: pass
-    return None
+        from py_clob_client.clob_types import OrderArgs, OrderType
+        from py_clob_client.order_builder.constants import BUY, SELL
+        o = OrderArgs(token_id=token_id, price=round(price, 2),
+                      size=round(size, 1), side=BUY if side == "BUY" else SELL)
+        return clob_client.post_order(clob_client.create_order(o), OrderType.GTC)
+    except Exception as e:
+        print(f"⚠️ Order failed: {e}"); return None
 
-def fmt_price(p,c): return f"💵 GGB: ${p:.6f}\n{'📈' if c>=0 else '📉'} 24h: {'+' if c>=0 else ''}{c:.2f}%"
+async def clob_balance():
+    if not clob_ready or not clob_client: return None
+    try:
+        from py_clob_client.clob_types import BalanceAllowanceParams, AssetType
+        b = clob_client.get_balance_allowance(BalanceAllowanceParams(asset_type=AssetType.COLLATERAL))
+        return float(b["balance"]) / 1e6 if b and "balance" in b else None
+    except Exception as e:
+        print(f"⚠️ Balance check failed: {e}"); return None
 
-def reset_gm():
-    global gm_tracker,gm_tracker_date
-    today=datetime.now(timezone.utc).date()
-    if gm_tracker_date!=today: gm_tracker,gm_tracker_date={},today
+async def withdraw_usdc(to_addr, amount):
+    if not POLYMARKET_PK: return False, "No private key"
+    try:
+        from web3 import Web3
+        w3 = Web3(Web3.HTTPProvider("https://polygon-rpc.com"))
+        abi = [{"constant":False,"inputs":[{"name":"to","type":"address"},
+                {"name":"value","type":"uint256"}],"name":"transfer",
+                "outputs":[{"name":"","type":"bool"}],"type":"function"}]
+        c = w3.eth.contract(address=Web3.to_checksum_address(
+            "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174"), abi=abi)
+        tx = c.functions.transfer(
+            Web3.to_checksum_address(to_addr), int(amount * 1e6)
+        ).build_transaction({
+            "from": Web3.to_checksum_address(POLYMARKET_WALLET),
+            "nonce": w3.eth.get_transaction_count(Web3.to_checksum_address(POLYMARKET_WALLET)),
+            "gas": 100000, "gasPrice": w3.eth.gas_price, "chainId": 137})
+        signed = w3.eth.account.sign_transaction(tx, POLYMARKET_PK)
+        receipt = w3.eth.wait_for_transaction_receipt(
+            w3.eth.send_raw_transaction(signed.raw_transaction), timeout=60)
+        if receipt["status"] == 1: return True, receipt["transactionHash"].hex()
+        return False, "Reverted"
+    except Exception as e: return False, str(e)
 
-async def start(update:Update,context:ContextTypes.DEFAULT_TYPE):
-    kb=[[InlineKeyboardButton("🐂 Bull Quote",callback_data="bull")],
-        [InlineKeyboardButton("📈 GGB Price",callback_data="price")],
-        [InlineKeyboardButton("🕊️ Follow on X",url="https://x.com/goodgreenbull")]]
-    await update.message.reply_text("🐂💚 *Good Green Bull*\n\nBuilt on Base. Built for builders.\nThe bull that doesn't stop.\n\nChoose below 👇",parse_mode="Markdown",reply_markup=InlineKeyboardMarkup(kb))
+# ── API Helpers ──────────────────────────────────────────────────────────────
+async def fetch_poly_markets():
+    markets = []
+    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10)) as s:
+        for kw in ["bitcoin", "btc", "ethereum", "eth", "crypto"]:
+            try:
+                async with s.get("https://gamma-api.polymarket.com/markets",
+                    params={"q": kw, "limit": 5, "active": "true", "closed": "false"}) as r:
+                    for m in await r.json():
+                        mid = m.get("id") or m.get("condition_id", "")
+                        if mid and mid not in [x.get("id") for x in markets]:
+                            markets.append(m)
+            except Exception as e: print(f"⚠️ Poly fetch ({kw}): {e}")
+    return markets
 
-async def help_command(update:Update,context:ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("📜 *GGB Commands*\n\n/start /price /bull /gm /leaderboard /wallet /token /herd\n\n👤 *Admin:* /daily /revival /signals /signalstatus /settings\n\n💰 *Trading:* /botbalance /testconnection /pause /resume /golive /withdraw",parse_mode="Markdown")
+async def fetch_btc_eth():
+    try:
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10)) as s:
+            async with s.get("https://api.coingecko.com/api/v3/simple/price",
+                params={"ids": "bitcoin,ethereum", "vs_currencies": "usd",
+                         "include_24hr_change": "true"}) as r:
+                return await r.json()
+    except Exception as e:
+        print(f"⚠️ CoinGecko: {e}"); return {}
 
-async def price(update:Update,context:ContextTypes.DEFAULT_TYPE):
-    pv,ch=await fetch_price()
-    if pv is None: await update.message.reply_text("⚠️ Price unavailable."); return
-    await update.message.reply_text(f"{fmt_price(pv,ch)}\n\n📊 https://tinyurl.com/GGBDex\n📄 `{GGB_CONTRACT}`",parse_mode="Markdown")
+# ── Signal Scanner ───────────────────────────────────────────────────────────
+async def run_signal_scan():
+    global signal_bankroll, signal_peak, signal_consecutive_losses
+    global signal_is_paused, signal_pause_until, tracked_markets
+    if not polymarket_enabled or not TELEGRAM_GROUP_ID: return
+    now = datetime.now(timezone.utc).timestamp()
+    if signal_is_paused:
+        if now < signal_pause_until: return
+        signal_is_paused = False
+    if signal_bankroll <= signal_peak * (1 - TRAIL_STOP): return
 
-async def bull(update:Update,context:ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(get_quote())
+    prices = await fetch_btc_eth()
+    btc = prices.get("bitcoin", {}).get("usd")
+    if not btc: return
+    ts = now
+    btc_price_history.append((ts, btc))
+    eth = prices.get("ethereum", {}).get("usd")
+    if eth: eth_price_history.append((ts, eth))
+    cutoff = ts - 1200
+    btc_price_history[:] = [(t, p) for t, p in btc_price_history if t >= cutoff]
+    eth_price_history[:] = [(t, p) for t, p in eth_price_history if t >= cutoff]
 
-async def gm_command(update:Update,context:ContextTypes.DEFAULT_TYPE):
-    reset_gm(); user=update.effective_user; name=user.first_name or "Bull"
-    if user.id not in gm_tracker: gm_tracker[user.id]={"name":name,"count":0}
-    gm_tracker[user.id]["count"]+=1
-    await update.message.reply_text(random.choice([f"GM {name} 🐂💚 Build mode ON.",f"GM {name} 💚 Herd awake. Let's move.",f"GM {name} 🐂 Another rep. Lock in.",f"GM {name} 💚 Still building.",f"GM {name} 🐂💚 Herd strong."]))
+    rets = {}
+    for w in [1, 5, 15]:
+        past = next((p for t, p in reversed(btc_price_history) if t <= ts - w * 60), None)
+        if past and past > 0: rets[w] = (btc - past) / past
+    if not rets: return
 
-async def leaderboard(update:Update,context:ContextTypes.DEFAULT_TYPE):
-    reset_gm()
-    if not gm_tracker: await update.message.reply_text("No GMs yet. /gm to get on the board 🐂💚"); return
-    ranked=sorted(gm_tracker.items(),key=lambda x:x[1]["count"],reverse=True)
-    medals=["🥇","🥈","🥉"]+["🐂"]*7
-    lines=["🏆 *GM Leaderboard — Today*\n"]+[f"{medals[i]} {d['name']} — {d['count']} GMs" for i,(_,d) in enumerate(ranked[:10])]+["\n/gm to join 💚"]
-    await update.message.reply_text("\n".join(lines),parse_mode="Markdown")
+    if not tracked_markets:
+        for m in (await fetch_poly_markets())[:8]:
+            mid = m.get("id") or m.get("condition_id", "")
+            name = m.get("question", m.get("title", "Unknown"))[:60]
+            tokens = m.get("tokens", [])
+            p = max(0.05, min(0.95, float(tokens[0].get("price", 0.5)) if tokens else 0.5))
+            nl = name.lower()
+            corr = (0.90 if any(k in nl for k in ["btc","bitcoin","$100k","$90k"])
+                    else 0.82 if any(k in nl for k in ["eth","ethereum"])
+                    else 0.78 if any(k in nl for k in ["crypto","market cap"]) else 0.50)
+            if corr >= MIN_CORR:
+                tracked_markets[mid] = {"name": name, "price": p, "posterior": p,
+                                         "correlation": corr, "last_signal_ts": 0, "updates": 0}
+        if tracked_markets: print(f"📊 Tracking {len(tracked_markets)} markets")
 
-async def wallet(update:Update,context:ContextTypes.DEFAULT_TYPE):
-    if not context.args: await update.message.reply_text("Usage: `/wallet <address>`",parse_mode="Markdown"); return
-    bal=await fetch_balance(context.args[0])
-    if bal is None: await update.message.reply_text("⚠️ Fetch failed."); return
-    pv,_=await fetch_price(); addr=context.args[0]
-    await update.message.reply_text(f"👛 `{addr[:6]}...{addr[-4:]}`\n🐂 {bal:,.2f} GGB{chr(10)+'💵 ≈ ${:,.2f} USD'.format(bal*pv) if pv else ''}",parse_mode="Markdown")
+    for mid, mkt in tracked_markets.items():
+        for w in sorted(rets):
+            if abs(rets[w]) >= MOVE_THRESH:
+                mkt["posterior"] = bayes(mkt["posterior"], rets[w], w, mkt["correlation"])
+                mkt["updates"] += 1
+        ev = ev_gap(mkt["posterior"], mkt["price"])
+        kl = kl_div(mkt["posterior"], mkt["price"])
+        conf = abs(mkt["posterior"] - mkt["price"])
+        if ev < EV_THRESH or conf < MIN_CONF: continue
+        confirms = 1 + (kl >= 0.10) + (conf >= 0.20)
+        if confirms < 2 or ts - mkt["last_signal_ts"] < COOLDOWN: continue
+        bet = calc_bet(signal_bankroll, mkt["posterior"], mkt["price"])
+        if bet < 0.50: continue
 
-async def token(update:Update,context:ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(f"📈 *$GGB*\nGood Green Bull | Base | 18 decimals\n`{GGB_CONTRACT}`\nhttps://basescan.org/token/{GGB_CONTRACT}",parse_mode="Markdown")
+        direction = "BUY YES 🟢" if mkt["posterior"] > mkt["price"] else "BUY NO 🔴"
+        mkt["last_signal_ts"] = ts
+        signal_trades.append({"ts": ts, "market": mkt["name"], "direction": direction,
+            "posterior": mkt["posterior"], "market_price": mkt["price"],
+            "ev": ev, "bet": bet, "won": None})
 
-async def herd(update:Update,context:ContextTypes.DEFAULT_TYPE):
-    cs="Growing daily"
-    if TELEGRAM_GROUP_ID:
-        try: cs=f"{await context.bot.get_chat_member_count(int(TELEGRAM_GROUP_ID)):,} members"
-        except: pass
-    await update.message.reply_text(f"🐂 *GGB Herd*\n{cs}\n{random.choice(['Still building. 🐂💚','Bulls dont fold. 🐂💚','Early is a choice. 🐂💚'])}\nhttps://t.me/goodgreenbull",parse_mode="Markdown")
+        trade_status = "📝 Paper trade"
+        if TRADING_MODE == "live" and clob_ready and not trading_paused:
+            try:
+                raw = await fetch_poly_markets()
+                tokens = next((rm.get("tokens", []) for rm in raw
+                    if (rm.get("id") or rm.get("condition_id", "")) == mid), None)
+                if tokens:
+                    if mkt["posterior"] > mkt["price"]:
+                        tid, tside, tp = tokens[0].get("token_id", ""), "BUY", mkt["price"]
+                    else:
+                        tid = tokens[1].get("token_id", "") if len(tokens) > 1 else tokens[0].get("token_id", "")
+                        tside = "BUY" if len(tokens) > 1 else "SELL"
+                        tp = 1 - mkt["price"] if len(tokens) > 1 else mkt["price"]
+                    if tid:
+                        resp = await clob_order(tid, tside, tp, bet / tp)
+                        if resp:
+                            oid = str(resp.get("orderID", resp.get("id", "?")))[:12]
+                            trade_status = f"✅ LIVE ORDER — {oid}..."
+                            rb = await clob_balance()
+                            if rb: signal_bankroll = rb; signal_peak = max(signal_peak, rb)
+                        else: trade_status = "⚠️ Order failed — paper logged"
+            except Exception: pass
 
-async def settings(update:Update,context:ContextTypes.DEFAULT_TYPE):
-    kb=[[InlineKeyboardButton("📣 Send Revival",callback_data="send_revival")],
-        [InlineKeyboardButton("📤 Send Daily",callback_data="send_daily")]]
-    await update.message.reply_text("⚙️ *Admin Settings*",parse_mode="Markdown",reply_markup=InlineKeyboardMarkup(kb))
+        dd = (signal_peak - signal_bankroll) / signal_peak if signal_peak else 0
 
-async def daily_command(update:Update,context:ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("📤 Sending..."); await send_beefy_daily()
-
-async def revival_command(update:Update,context:ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("📣 Sending..."); await send_revival_blast()
-
-async def send_beefy_daily():
-    if not TELEGRAM_GROUP_ID: return
-    pv,ch=await fetch_price()
-    pl=f"$GGB: ${pv:.6f} | {'+' if ch>=0 else ''}{ch:.2f}% 24h" if pv else "$GGB: unavailable"
-    try: await application.bot.send_message(chat_id=int(TELEGRAM_GROUP_ID),text=f"GM Herd 🐂💚\n\n{get_quote()}\n\n{pl}\n\nWhat are you building today? 👇")
-    except Exception as e: print(f"⚠️ Daily:{e}")
-
-async def send_weekly_engagement():
-    if not TELEGRAM_GROUP_ID: return
-    q=WQ[datetime.now(timezone.utc).isocalendar()[1]%len(WQ)]
-    try: await application.bot.send_message(chat_id=int(TELEGRAM_GROUP_ID),text=f"🐂 *Builder Monday*\n\n{q}\n\nBest answer gets a shout 💚",parse_mode="Markdown")
-    except Exception as e: print(f"⚠️ Weekly:{e}")
-
-async def send_revival_blast():
-    if not TELEGRAM_GROUP_ID: return
-    try: await application.bot.send_message(chat_id=int(TELEGRAM_GROUP_ID),parse_mode="Markdown",
-        text="🐂💚 *GGB IS BACK.*\n\nBeefy's been building. Now we move.\n\nFounding herd gets rewarded first. We move. 🐂💚\n\nhttps://x.com/goodgreenbull")
-    except Exception as e: print(f"⚠️ Revival:{e}")
-
-async def send_daily_balance():
-    ADMIN_CHAT_ID=os.getenv("ADMIN_CHAT_ID")
-    if not ADMIN_CHAT_ID: return
-    bal=await signals.get_clob_balance() if signals.clob_ready else None
-    pnl=signals.signal_bankroll-50.0; n=len(signals.signal_trades)
-    wins=sum(1 for t in signals.signal_trades if t.get("won"))
-    dd=(signals.signal_peak-signals.signal_bankroll)/signals.signal_peak if signals.signal_peak else 0
-    try: await application.bot.send_message(chat_id=int(ADMIN_CHAT_ID),parse_mode="Markdown",
-        text=f"📊 *Daily*\n{'${:.2f}'.format(bal) if bal else '📝 Paper'} | Roll:${signals.signal_bankroll:.2f} PnL:${pnl:+.2f} DD:{dd:.1%}\nTrades:{n} W:{wins} L:{n-wins} | {'🟢' if signals.TRADING_MODE=='live' else '📝'}")
-    except Exception as e: print(f"⚠️ Bal:{e}")
-
-async def handle_gm_text(update:Update,context:ContextTypes.DEFAULT_TYPE):
-    if not update.message or not update.message.text: return
-    if update.message.text.strip().lower() in ("gm","gm!","good morning","gm 🐂","gm 💚"):
-        reset_gm(); user=update.effective_user; name=user.first_name or "Bull"
-        if user.id not in gm_tracker: gm_tracker[user.id]={"name":name,"count":0}
-        gm_tracker[user.id]["count"]+=1
-        await update.message.reply_text(random.choice([f"GM {name} 🐂💚",f"GM {name} 💚 Lock in.",f"GM {name} 🐂 Build today.",f"GM {name} 💚 Herd strong."]))
-
-async def welcome_new_member(update:Update,context:ContextTypes.DEFAULT_TYPE):
-    r=update.chat_member
-    if not r: return
-    if r.old_chat_member.status in(ChatMember.LEFT,ChatMember.BANNED) and r.new_chat_member.status==ChatMember.MEMBER:
-        name=r.new_chat_member.user.first_name or "Bull"
-        await context.bot.send_message(chat_id=r.chat.id,text=f"🐂💚 Welcome {name}!\n\nGood Green Bull — builder community on Base.\n\n📈 /price | 🐂 /bull | 👋 /gm\n\nhttps://x.com/goodgreenbull\n\nHerd strong. 🐂💚")
-
-async def detect_spam(update:Update,context:ContextTypes.DEFAULT_TYPE):
-    if not update.message or not update.effective_user: return
-    uid,cid=update.effective_user.id,update.effective_chat.id
-    now=datetime.now(timezone.utc)
-    ts=[t for t in user_spam_tracker.get(uid,[]) if now-t<timedelta(seconds=10)]+[now]
-    user_spam_tracker[uid]=ts
-    if len(ts)>5:
         try:
-            await context.bot.restrict_chat_member(cid,uid,permissions=ChatPermissions(can_send_messages=False),until_date=now+timedelta(minutes=10))
-            await context.bot.send_message(cid,"⚠️ User muted 10 mins.")
-        except: pass
+            await application.bot.send_message(chat_id=int(TELEGRAM_GROUP_ID), parse_mode="Markdown",
+                text=(f"🔔 *POLYMARKET SIGNAL*\n━━━━━━━━━━━━━━━━━━━━━━\n"
+                      f"📊 *{mkt['name']}*\n📌 {direction}\n"
+                      f"💰 Market: {mkt['price']:.2%} → Belief: {mkt['posterior']:.2%}\n"
+                      f"📈 EV: {ev:+.2%} | Confidence: {confirms}/3\n"
+                      f"BTC: ${btc:,.0f} | Updates: {mkt['updates']}\n"
+                      f"_Beefy quant engine • not financial advice_"))
+        except Exception as e: print(f"⚠️ Group signal: {e}")
 
-async def button(update:Update,context:ContextTypes.DEFAULT_TYPE):
-    q=update.callback_query; await q.answer()
-    if q.data=="bull": await q.edit_message_text(get_quote())
-    elif q.data=="price":
-        pv,ch=await fetch_price()
-        await q.edit_message_text("⚠️ Unavailable." if pv is None else f"{fmt_price(pv,ch)}\n\n📊 https://tinyurl.com/GGBDex")
-    elif q.data=="send_revival": await q.edit_message_text("📣 Sending..."); await send_revival_blast()
-    elif q.data=="send_daily": await q.edit_message_text("📤 Sending..."); await send_beefy_daily()
+        if ADMIN_CHAT_ID:
+            try:
+                await application.bot.send_message(chat_id=int(ADMIN_CHAT_ID), parse_mode="Markdown",
+                    text=(f"🔒 *PRIVATE SIGNAL*\n━━━━━━━━━━━━━━━━━━━━━━\n"
+                          f"📊 *{mkt['name']}*\n📌 {direction}\n"
+                          f"💰 {mkt['price']:.2%} → {mkt['posterior']:.2%}\n"
+                          f"📈 EV: {ev:+.2%} | KL: {kl:.4f} | {confirms}/3\n"
+                          f"💵 Bet: ${bet:.2f} | Bank: ${signal_bankroll:.2f}\n"
+                          f"📉 DD: {dd:.1%} | Streak: {signal_consecutive_losses}\n"
+                          f"🤖 {trade_status} | {'LIVE' if TRADING_MODE=='live' else 'PAPER'}"))
+            except Exception as e: print(f"⚠️ Admin DM: {e}")
 
-@app.route("/",methods=["GET"])
-async def home(): return "🐂 GGB Bot is Alive!"
+        print(f"📊 Signal: {mkt['name']} — {direction} — ${bet:.2f}")
+        mkt["posterior"] = 0.6 * mkt["price"] + 0.4 * mkt["posterior"]
 
-@app.route(WEBHOOK_PATH,methods=["POST"])
+# ── Commands ─────────────────────────────────────────────────────────────────
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "🐂 *Beefy Quant Engine*\n\n"
+        "/signals — Toggle scanner on/off\n"
+        "/signalstatus — Dashboard\n"
+        "/botbalance — Wallet balance\n"
+        "/withdraw — Send USDC to personal wallet\n"
+        "/pause /resume — Trading control\n"
+        "/testconnection — API check\n"
+        "/golive — Activate live trading",
+        parse_mode="Markdown")
+
+async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await start(update, context)
+
+async def signals_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global polymarket_enabled, tracked_markets, signal_bankroll, signal_peak
+    global signal_trades, signal_consecutive_losses, signal_is_paused
+    if not is_admin(update.effective_user):
+        await update.message.reply_text("⛔ Admin only."); return
+    polymarket_enabled = not polymarket_enabled
+    if polymarket_enabled:
+        tracked_markets, signal_trades = {}, []
+        signal_bankroll = signal_peak = 50.0
+        signal_consecutive_losses = 0; signal_is_paused = False
+        await update.message.reply_text(
+            "📊 *Signals: ON*\nScanning every 60s.\n/signalstatus for dashboard | /signals to toggle off",
+            parse_mode="Markdown")
+        if ADMIN_CHAT_ID and str(update.effective_chat.id) != str(ADMIN_CHAT_ID):
+            try:
+                await application.bot.send_message(chat_id=int(ADMIN_CHAT_ID),
+                    text="🔒 *Signals ON* — $50 bankroll | 20% stop | 8% max | 0.25x Kelly",
+                    parse_mode="Markdown")
+            except Exception: pass
+    else:
+        await update.message.reply_text("📊 Signals: OFF")
+
+async def signalstatus_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not polymarket_enabled:
+        await update.message.reply_text("📊 Signals OFF. /signals to enable"); return
+    mlines = []
+    for _, mkt in list(tracked_markets.items())[:5]:
+        d = mkt["posterior"] - mkt["price"]
+        mlines.append(f"  {mkt['name'][:35]}\n    {mkt['price']:.2%} → {mkt['posterior']:.2%} "
+                       f"({'↑' if d > 0 else '↓'}{abs(d):.2%})")
+    mt = "\n".join(mlines) or "  Loading..."
+    if update.effective_chat.type == "private" and is_admin(update.effective_user):
+        n, wins = len(signal_trades), sum(1 for t in signal_trades if t.get("won"))
+        pnl = signal_bankroll - 50.0
+        dd = (signal_peak - signal_bankroll) / signal_peak if signal_peak else 0
+        await update.message.reply_text(
+            f"🔒 *Dashboard*\n\nStatus: 🟢 ACTIVE | Markets: {len(tracked_markets)}\n"
+            f"💰 ${signal_bankroll:.2f} | PnL: ${pnl:+.2f} | DD: {dd:.1%}\n"
+            f"Stop: ${signal_peak*(1-TRAIL_STOP):.2f} | Trades: {n} (W:{wins} L:{n-wins})\n"
+            f"Streak: {signal_consecutive_losses}\n\n{mt}", parse_mode="Markdown")
+    else:
+        await update.message.reply_text(
+            f"📊 *Scanner*\n\n🟢 ACTIVE | {len(tracked_markets)} markets\n\n{mt}",
+            parse_mode="Markdown")
+
+async def botbalance_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update.effective_user):
+        await update.message.reply_text("⛔ Admin only."); return
+    if not POLYMARKET_PK:
+        await update.message.reply_text("⚠️ Set POLYMARKET_PRIVATE_KEY in Render."); return
+    bal = await clob_balance()
+    ws = f"{POLYMARKET_WALLET[:6]}...{POLYMARKET_WALLET[-4:]}" if POLYMARKET_WALLET else "n/a"
+    await update.message.reply_text(
+        f"🔒 *Wallet*\n`{ws}`\n"
+        f"USDC: {'${:.2f}'.format(bal) if bal is not None else 'fetch failed'}\n"
+        f"Mode: {'LIVE' if TRADING_MODE=='live' else 'PAPER'} | "
+        f"CLOB: {'✅' if clob_ready else '❌'} | "
+        f"{'⏸' if trading_paused else '▶️'}\n"
+        f"Paper: ${signal_bankroll:.2f} (peak ${signal_peak:.2f})", parse_mode="Markdown")
+
+async def withdraw_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update.effective_user):
+        await update.message.reply_text("⛔ Admin only."); return
+    if update.effective_chat.type != "private":
+        await update.message.reply_text("🔒 DM only."); return
+    if not POLYMARKET_PK or not PERSONAL_WALLET:
+        await update.message.reply_text("⚠️ Need POLYMARKET_PRIVATE_KEY + YOUR_PERSONAL_WALLET"); return
+    bal = await clob_balance()
+    if not bal or bal <= 0.01:
+        await update.message.reply_text(f"⚠️ No balance (${bal or 0:.2f})"); return
+    ws = f"{PERSONAL_WALLET[:6]}...{PERSONAL_WALLET[-4:]}"
+    if not context.user_data.get("withdraw_confirmed"):
+        context.user_data.update({"withdraw_confirmed": True, "withdraw_amount": bal})
+        await update.message.reply_text(
+            f"⚠️ *Confirm:* ${bal:.2f} USDC → `{ws}`\n/withdraw to confirm | /cancel to abort",
+            parse_mode="Markdown"); return
+    amount = context.user_data.get("withdraw_amount", bal)
+    context.user_data["withdraw_confirmed"] = False
+    await update.message.reply_text(f"📤 Sending ${amount:.2f}...")
+    ok, res = await withdraw_usdc(PERSONAL_WALLET, amount)
+    if ok:
+        await update.message.reply_text(
+            f"✅ ${amount:.2f} → `{ws}`\nhttps://polygonscan.com/tx/0x{res}", parse_mode="Markdown")
+    else:
+        await update.message.reply_text(f"❌ Failed: {res}")
+
+async def cancel_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data["withdraw_confirmed"] = False
+    await update.message.reply_text("✅ Cancelled.")
+
+async def pause_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global trading_paused
+    if not is_admin(update.effective_user):
+        await update.message.reply_text("⛔ Admin only."); return
+    trading_paused = True
+    await update.message.reply_text("⏸ *Trading PAUSED* — /resume to restart", parse_mode="Markdown")
+
+async def resume_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global trading_paused
+    if not is_admin(update.effective_user):
+        await update.message.reply_text("⛔ Admin only."); return
+    trading_paused = False
+    await update.message.reply_text(
+        f"▶️ *Trading RESUMED* — {'LIVE' if TRADING_MODE=='live' else 'PAPER'} | "
+        f"CLOB: {'✅' if clob_ready else '❌'}", parse_mode="Markdown")
+
+async def testconn_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update.effective_user):
+        await update.message.reply_text("⛔ Admin only."); return
+    lines = ["🔧 *Connection Test*\n",
+        f"{'✅' if POLYMARKET_PK else '❌'} PRIVATE_KEY",
+        f"{'✅' if POLYMARKET_WALLET else '❌'} WALLET_ADDRESS",
+        f"{'✅' if PERSONAL_WALLET else '❌'} PERSONAL_WALLET",
+        f"Mode: {TRADING_MODE} | CLOB: {'✅' if clob_ready else '❌'}"]
+    if clob_ready:
+        bal = await clob_balance()
+        lines.append(f"Balance: {'${:.2f}'.format(bal) if bal else 'failed'}")
+    try:
+        mkts = await fetch_poly_markets()
+        lines.append(f"Polymarket: {len(mkts)} markets")
+    except Exception as e: lines.append(f"Polymarket: {e}")
+    try:
+        p = await fetch_btc_eth()
+        lines.append(f"CoinGecko: BTC ${p.get('bitcoin',{}).get('usd',0):,.0f}")
+    except Exception as e: lines.append(f"CoinGecko: {e}")
+    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+
+async def golive_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update.effective_user):
+        await update.message.reply_text("⛔ Admin only."); return
+    if update.effective_chat.type != "private":
+        await update.message.reply_text("🔒 DM only."); return
+    if TRADING_MODE != "live":
+        await update.message.reply_text(
+            "⚠️ TRADING_MODE is 'paper'.\n"
+            "Render → Environment → TRADING_MODE=live → Redeploy → /testconnection"); return
+    if not clob_ready:
+        await update.message.reply_text("❌ CLOB not connected. /testconnection first."); return
+    bal = await clob_balance()
+    await update.message.reply_text(
+        f"🟢 *LIVE TRADING ACTIVE*\n"
+        f"Balance: ${bal:.2f} | {'▶️' if not trading_paused else '⏸'}\n"
+        f"/pause | /withdraw | /botbalance", parse_mode="Markdown")
+
+# ── Scheduled: Daily Balance DM ──────────────────────────────────────────────
+async def send_daily_balance():
+    if not ADMIN_CHAT_ID: return
+    bal = await clob_balance() if clob_ready else None
+    pnl = signal_bankroll - 50.0
+    dd = (signal_peak - signal_bankroll) / signal_peak if signal_peak else 0
+    n = len(signal_trades); wins = sum(1 for t in signal_trades if t.get("won"))
+    try:
+        await application.bot.send_message(chat_id=int(ADMIN_CHAT_ID), parse_mode="Markdown",
+            text=(f"📊 *Daily Report*\n"
+                  f"{'💰 $'+f'{bal:.2f}' if bal else '📝 Paper'} | "
+                  f"Bank: ${signal_bankroll:.2f} | PnL: ${pnl:+.2f}\n"
+                  f"DD: {dd:.1%} | Trades: {n} (W:{wins} L:{n-wins})\n"
+                  f"{'LIVE' if TRADING_MODE=='live' else 'PAPER'} | "
+                  f"{'⏸' if trading_paused else '▶️'}"))
+    except Exception as e: print(f"⚠️ Daily balance DM: {e}")
+
+# ── Scheduled: Keep-alive ping ───────────────────────────────────────────────
+async def self_ping():
+    try:
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=5)) as s:
+            await s.get(f"https://beefy-bot.onrender.com/ping")
+    except Exception: pass
+
+# ── Safe scheduler wrapper ───────────────────────────────────────────────────
+async def safe_job(coro_func, timeout=30):
+    try: await asyncio.wait_for(coro_func(), timeout=timeout)
+    except asyncio.TimeoutError: print(f"⚠️ Job timed out: {coro_func.__name__}")
+    except Exception as e: print(f"⚠️ Job error ({coro_func.__name__}): {e}")
+
+# ── Routes ───────────────────────────────────────────────────────────────────
+@app.route("/ping", methods=["GET"])
+async def ping(): return "pong", 200
+
+@app.route("/", methods=["GET"])
+async def home(): return "🐂 Beefy Quant Engine — Running"
+
+@app.route(WEBHOOK_PATH, methods=["POST"])
 async def webhook():
-    update=Update.de_json(await request.get_json(force=True),application.bot)
-    await application.process_update(update); return "OK"
+    data = await request.get_json(force=True)
+    update = Update.de_json(data, application.bot)
+    await application.process_update(update)
+    return "OK"
 
+# ── Startup ──────────────────────────────────────────────────────────────────
 def register_handlers():
-    h=application.add_handler
-    h(CommandHandler("start",start)); h(CommandHandler("help",help_command))
-    h(CommandHandler("price",price)); h(CommandHandler("bull",bull))
-    h(CommandHandler("gm",gm_command)); h(CommandHandler("leaderboard",leaderboard))
-    h(CommandHandler("wallet",wallet)); h(CommandHandler("token",token))
-    h(CommandHandler("herd",herd)); h(CommandHandler("daily",daily_command))
-    h(CommandHandler("revival",revival_command)); h(CommandHandler("settings",settings))
-    h(CommandHandler("signals",signals.signals_command)); h(CommandHandler("signalstatus",signals.signalstatus_command))
-    h(CommandHandler("botbalance",signals.botbalance_command)); h(CommandHandler("withdraw",signals.withdraw_command))
-    h(CommandHandler("cancel",signals.cancel_command)); h(CommandHandler("pause",signals.pause_command))
-    h(CommandHandler("resume",signals.resume_command)); h(CommandHandler("testconnection",signals.testconnection_command))
-    h(CommandHandler("golive",signals.golive_command)); h(CallbackQueryHandler(button))
-    h(ChatMemberHandler(welcome_new_member,ChatMemberHandler.CHAT_MEMBER))
-    h(MessageHandler(filters.TEXT&~filters.COMMAND,handle_gm_text),group=1)
-    h(MessageHandler(filters.TEXT&~filters.COMMAND,detect_spam),group=2)
+    h = application.add_handler
+    h(CommandHandler("start", start));           h(CommandHandler("help", help_cmd))
+    h(CommandHandler("signals", signals_cmd));   h(CommandHandler("signalstatus", signalstatus_cmd))
+    h(CommandHandler("botbalance", botbalance_cmd))
+    h(CommandHandler("withdraw", withdraw_cmd)); h(CommandHandler("cancel", cancel_cmd))
+    h(CommandHandler("pause", pause_cmd));       h(CommandHandler("resume", resume_cmd))
+    h(CommandHandler("testconnection", testconn_cmd))
+    h(CommandHandler("golive", golive_cmd))
 
-async def on_startup():
+@app.before_serving
+async def startup():
+    register_handlers()
     await application.initialize()
-    await application.bot.set_webhook(url=WEBHOOK_URL); print(f"✅ Webhook set")
-    await signals.init_clob_client()
-    sc=AsyncIOScheduler(timezone="UTC")
-    sc.add_job(send_beefy_daily,"cron",hour=8,minute=0)
-    sc.add_job(send_weekly_engagement,"cron",day_of_week="mon",hour=9,minute=0)
-    sc.add_job(signals.run_signal_scan,"interval",seconds=60)
-    sc.add_job(send_daily_balance,"cron",hour=8,minute=5)
-    sc.start(); print(f"✅ Scheduler up | {signals.TRADING_MODE}")
-
-async def main():
-    register_handlers(); await on_startup()
-    from hypercorn.asyncio import serve as hserve
-    from hypercorn.config import Config
-    cfg=Config(); cfg.bind=[f"0.0.0.0:{os.environ.get('PORT','10000')}"]
-    await hserve(app,cfg)
-
-if __name__=="__main__": asyncio.run(main())
+    await application.bot.set_webhook(url=WEBHOOK_URL)
+    print(f"✅ Webhook: {WEBHOOK_URL}")
+    await init_clob()
+    scheduler = AsyncIOScheduler(timezone="UTC")
+    scheduler.add_job(lambda: asyncio.ensure_future(safe_job(run_signal_scan, 30)),
+                      "interval", seconds=60)
+    scheduler.add_job(lambda: asyncio.ensure_future(safe_job(send_daily_balance, 15)),
+                      "cron", hour=8, minute=5)
+    scheduler.add_job(lambda: asyncio.ensure_future(safe_job(self_ping, 10)),
+                      "interval", minutes=10)
+    scheduler.start()
+    print(f"✅ Scheduler: signals 60s | balance 08:05 | ping 10m")
+    print(f"📋 Mode: {TRADING_MODE} | CLOB: {'ready' if clob_ready else 'paper'}")
