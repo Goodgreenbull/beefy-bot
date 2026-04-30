@@ -170,34 +170,20 @@ async def fetch_poly_markets():
     return markets
 
 async def fetch_btc_eth():
-    """Fetch BTC/ETH prices. Primary: Binance. Fallback: CryptoCompare."""
-    # Primary — Binance single-symbol calls (avoids URL encoding issues with arrays)
+    """CryptoCompare — server-friendly, 100k calls/month free, no key needed."""
     try:
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10)) as s:
-            async with s.get("https://api.binance.com/api/v3/ticker/price",
-                             params={"symbol": "BTCUSDT"}) as r:
-                btc_data = await r.json()
-                btc = float(btc_data["price"])
-            async with s.get("https://api.binance.com/api/v3/ticker/price",
-                             params={"symbol": "ETHUSDT"}) as r:
-                eth_data = await r.json()
-                eth = float(eth_data["price"])
-        if btc > 0:
-            return {"bitcoin": {"usd": btc}, "ethereum": {"usd": eth}}
+            async with s.get(
+                "https://min-api.cryptocompare.com/data/pricemulti",
+                params={"fsyms": "BTC,ETH", "tsyms": "USD"}
+            ) as r:
+                data = await r.json(content_type=None)
+                btc  = float(data["BTC"]["USD"])
+                eth  = float(data["ETH"]["USD"])
+                if btc > 0:
+                    return {"bitcoin": {"usd": btc}, "ethereum": {"usd": eth}}
     except Exception as e:
-        print(f"⚠️ Binance: {e}")
-    # Fallback — CryptoCompare (separate rate limits from CoinGecko)
-    try:
-        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10)) as s:
-            async with s.get("https://min-api.cryptocompare.com/data/pricemulti",
-                params={"fsyms": "BTC,ETH", "tsyms": "USD"}) as r:
-                data = await r.json()
-                return {
-                    "bitcoin":  {"usd": float(data["BTC"]["USD"])},
-                    "ethereum": {"usd": float(data["ETH"]["USD"])},
-                }
-    except Exception as e:
-        print(f"⚠️ CryptoCompare: {e}")
+        print(f"⚠️ Price feed: {e}")
     return {}
 
 # ── Signal Scanner ───────────────────────────────────────────────────────────
@@ -529,9 +515,8 @@ async def testconn_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         p       = await fetch_btc_eth()
         btc_usd = p.get("bitcoin", {}).get("usd", 0)
-        src     = "Binance" if btc_usd > 0 else "no source"
-        lines.append(f"✅ Price feed ({src}): BTC ${btc_usd:,.0f}" if btc_usd > 0
-                     else "❌ Price feed: all sources failed")
+        lines.append(f"✅ CryptoCompare: BTC ${btc_usd:,.0f}" if btc_usd > 0
+                     else "❌ Price feed failed")
     except Exception as e: lines.append(f"❌ Price feed: {e}")
     await update.message.reply_text("\n".join(lines))
 
