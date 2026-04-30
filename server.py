@@ -170,14 +170,21 @@ async def fetch_poly_markets():
     return markets
 
 async def fetch_btc_eth():
+    # Binance public API — no key, high rate limits
     try:
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10)) as s:
-            async with s.get("https://api.coingecko.com/api/v3/simple/price",
-                params={"ids": "bitcoin,ethereum", "vs_currencies": "usd",
-                        "include_24hr_change": "true"}) as r:
-                return await r.json()
+            async with s.get("https://api.binance.com/api/v3/ticker/price",
+                params={"symbols": '["BTCUSDT","ETHUSDT"]'}) as r:
+                data = await r.json()
+                result = {}
+                for item in data:
+                    if item["symbol"] == "BTCUSDT":
+                        result["bitcoin"] = {"usd": float(item["price"])}
+                    elif item["symbol"] == "ETHUSDT":
+                        result["ethereum"] = {"usd": float(item["price"])}
+                return result
     except Exception as e:
-        print(f"⚠️ CoinGecko: {e}"); return {}
+        print(f"⚠️ Binance: {e}"); return {}
 
 # ── Signal Scanner ───────────────────────────────────────────────────────────
 async def run_signal_scan():
@@ -508,8 +515,8 @@ async def testconn_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         p       = await fetch_btc_eth()
         btc_usd = p.get("bitcoin", {}).get("usd", 0)
-        lines.append(f"✅ CoinGecko: BTC ${btc_usd:,.0f}")
-    except Exception as e: lines.append(f"❌ CoinGecko: {e}")
+        lines.append(f"✅ Binance: BTC ${btc_usd:,.0f}")
+    except Exception as e: lines.append(f"❌ Binance: {e}")
     await update.message.reply_text("\n".join(lines))
 
 async def golive_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -552,7 +559,8 @@ async def send_daily_balance():
 async def self_ping():
     try:
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=5)) as s:
-            await s.get("https://beefy-bot.onrender.com/ping")
+            async with s.get("https://beefy-bot.onrender.com/ping") as r:
+                await r.read()
     except Exception: pass
 
 # ── Safe scheduler wrapper ───────────────────────────────────────────────────
