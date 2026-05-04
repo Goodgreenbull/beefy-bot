@@ -34,6 +34,7 @@ signal_pause_until        = 0.0
 btc_price_history         = []
 eth_price_history         = []
 tracked_markets           = {}
+markets_loaded_ts         = 0.0
 clob_client               = None
 clob_ready                = False
 trading_paused            = False
@@ -41,8 +42,7 @@ trading_paused            = False
 # ── Signal Config ────────────────────────────────────────────────────────────
 EV_THRESH    = 0.12;  FEE_PCT     = 0.02;  MIN_CONF    = 0.12
 MIN_CORR     = 0.80;  KELLY_FRAC  = 0.25;  MAX_BET     = 0.08
-TRAIL_STOP   = 0.20;  COOLDOWN    = 900;   PRIOR_DECAY = 0.95
-MOVE_THRESH  = 0.001
+TRAIL_STOP   = 0.20;  PRIOR_DECAY = 0.95;  COOLDOWN    = 300
 
 LIKELIHOOD = {
     1:  {"big_up":0.72,"small_up":0.58,"flat":0.50,"small_down":0.42,"big_down":0.28},
@@ -58,6 +58,9 @@ def safe_name(name):
     for c in ["*", "_", "`", "["]:
         name = name.replace(c, "")
     return name
+
+def fmt_ts(ts):
+    return datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%d/%m %H:%M")
 
 def classify(r):
     if r > 0.01:   return "big_up"
@@ -144,9 +147,7 @@ async def withdraw_usdc(to_addr, amount):
         ).build_transaction({
             "from":     Web3.to_checksum_address(POLYMARKET_WALLET),
             "nonce":    w3.eth.get_transaction_count(Web3.to_checksum_address(POLYMARKET_WALLET)),
-            "gas":      100000,
-            "gasPrice": w3.eth.gas_price,
-            "chainId":  137})
+            "gas":      100000, "gasPrice": w3.eth.gas_price, "chainId": 137})
         signed  = w3.eth.account.sign_transaction(tx, POLYMARKET_PK)
         receipt = w3.eth.wait_for_transaction_receipt(
             w3.eth.send_raw_transaction(signed.raw_transaction), timeout=60)
@@ -170,13 +171,10 @@ async def fetch_poly_markets():
     return markets
 
 async def fetch_btc_eth():
-    """CryptoCompare — server-friendly, 100k calls/month free, no key needed."""
     try:
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10)) as s:
-            async with s.get(
-                "https://min-api.cryptocompare.com/data/pricemulti",
-                params={"fsyms": "BTC,ETH", "tsyms": "USD"}
-            ) as r:
+            async with s.get("https://min-api.cryptocompare.com/data/pricemulti",
+                params={"fsyms": "BTC,ETH", "tsyms": "USD"}) as r:
                 data = await r.json(content_type=None)
                 btc  = float(data["BTC"]["USD"])
                 eth  = float(data["ETH"]["USD"])
@@ -189,7 +187,7 @@ async def fetch_btc_eth():
 # ── Signal Scanner ───────────────────────────────────────────────────────────
 async def run_signal_scan():
     global signal_bankroll, signal_peak, signal_consecutive_losses
-    global signal_is_paused, signal_pause_until, tracked_markets
+    global signal_is_paused, signal_pause_until, tracked_markets, markets_loaded_ts
 
     if not polymarket_enabled or not TELEGRAM_GROUP_ID: return
 
@@ -224,32 +222,36 @@ async def run_signal_scan():
         if past and past > 0: rets[w] = (btc - past) / past
     if not rets: return
 
-    if not tracked_markets:
+    # Load on first run or refresh weekly
+    if not tracked_markets or (ts - markets_loaded_ts) > 604800:
+        tracked_markets = {}
         for m in (await fetch_poly_markets())[:8]:
             mid    = m.get("id") or m.get("condition_id", "")
             name   = m.get("question", m.get("title", "Unknown"))[:60]
             tokens = m.get("tokens", [])
-            p      = max(0.05, min(0.95, float(tokens[0].get("price", 0.5)) if tokens else 0.5))
+            price  = max(0.05, min(0.95, float(tokens[0].get("price", 0.5)) if tokens else 0.5))
             nl     = name.lower()
             corr   = (0.90 if any(k in nl for k in ["btc", "bitcoin", "$100k", "$90k"])
                       else 0.82 if any(k in nl for k in ["eth", "ethereum"])
                       else 0.78 if any(k in nl for k in ["crypto", "market cap"]) else 0.50)
             if corr >= MIN_CORR:
                 tracked_markets[mid] = {
-                    "name": name, "price": p, "posterior": p,
+                    "name": name, "price": price,
+                    "posterior": 0.50,  # FIX: always neutral start, never anchored to market price
                     "correlation": corr, "last_signal_ts": 0, "updates": 0}
+        markets_loaded_ts = ts
         if tracked_markets:
-            print(f"📊 Tracking {len(tracked_markets)} markets")
+            print(f"📊 Loaded {len(tracked_markets)} markets")
 
     for mid, mkt in tracked_markets.items():
+        # FIX: update on every scan — no MOVE_THRESH filter
         for w in sorted(rets):
-            if abs(rets[w]) >= MOVE_THRESH:
-                mkt["posterior"] = bayes(mkt["posterior"], rets[w], w, mkt["correlation"])
-                mkt["updates"] += 1
+            mkt["posterior"] = bayes(mkt["posterior"], rets[w], w, mkt["correlation"])
+            mkt["updates"] += 1
 
-        ev   = ev_gap(mkt["posterior"], mkt["price"])
-        kl   = kl_div(mkt["posterior"], mkt["price"])
-        conf = abs(mkt["posterior"] - mkt["price"])
+        ev      = ev_gap(mkt["posterior"], mkt["price"])
+        kl      = kl_div(mkt["posterior"], mkt["price"])
+        conf    = abs(mkt["posterior"] - mkt["price"])
 
         if ev < EV_THRESH or conf < MIN_CONF: continue
         confirms = 1 + (kl >= 0.10) + (conf >= 0.20)
@@ -258,26 +260,26 @@ async def run_signal_scan():
         bet = calc_bet(signal_bankroll, mkt["posterior"], mkt["price"])
         if bet < 0.50: continue
 
+        triggers  = "+".join(f"{w}m" for w, r in sorted(rets.items()) if abs(r) > 0.002) or "drift"
         direction = "BUY YES 🟢" if mkt["posterior"] > mkt["price"] else "BUY NO 🔴"
         mkt["last_signal_ts"] = ts
         name = safe_name(mkt["name"])
 
-        # ── Paper trade simulation ────────────────────────────────────────
-        trade_status = "📝 Paper trade"
-        won          = None
-        pnl          = 0.0
+        # ── Paper trade ───────────────────────────────────────────────────
+        trade_status = "📝 Paper"
+        won = None; pnl = 0.0
 
         if TRADING_MODE == "paper":
-            won = random.random() < mkt["posterior"]
-            pnl = paper_payout(bet, mkt["price"], won)
+            won  = random.random() < mkt["posterior"]
+            pnl  = paper_payout(bet, mkt["price"], won)
             signal_bankroll += pnl
             signal_peak      = max(signal_peak, signal_bankroll)
             if won:
                 signal_consecutive_losses = 0
-                trade_status = f"✅ Paper WIN  +${pnl:.2f}"
+                trade_status = f"✅ WIN +${pnl:.2f}"
             else:
                 signal_consecutive_losses += 1
-                trade_status = f"❌ Paper LOSS -${abs(pnl):.2f}"
+                trade_status = f"❌ LOSS -${abs(pnl):.2f}"
             if signal_consecutive_losses >= 3:
                 signal_is_paused   = True
                 signal_pause_until = ts + 3600
@@ -306,23 +308,24 @@ async def run_signal_scan():
                         resp = await clob_order(tid, tside, tp, bet / tp)
                         if resp:
                             oid          = str(resp.get("orderID", resp.get("id", "?")))[:12]
-                            trade_status = f"✅ LIVE ORDER — {oid}..."
+                            trade_status = f"✅ LIVE {oid}..."
                             rb = await clob_balance()
                             if rb:
                                 signal_bankroll = rb
                                 signal_peak     = max(signal_peak, rb)
                         else:
-                            trade_status = "⚠️ Order failed — logged"
+                            trade_status = "⚠️ Order failed"
             except Exception: pass
+
+        dd = (signal_peak - signal_bankroll) / signal_peak if signal_peak else 0
 
         signal_trades.append({
             "ts": ts, "market": mkt["name"], "direction": direction,
             "posterior": mkt["posterior"], "market_price": mkt["price"],
-            "ev": ev, "bet": bet, "won": won, "pnl": pnl})
+            "ev": ev, "bet": bet, "won": won, "pnl": pnl,
+            "bankroll_after": signal_bankroll, "triggers": triggers})
 
-        dd = (signal_peak - signal_bankroll) / signal_peak if signal_peak else 0
-
-        # ── Group message (clean — no money info) ────────────────────────
+        # ── Group message ─────────────────────────────────────────────────
         try:
             await application.bot.send_message(
                 chat_id=int(TELEGRAM_GROUP_ID), parse_mode="Markdown",
@@ -330,12 +333,12 @@ async def run_signal_scan():
                       f"📊 *{name}*\n"
                       f"📌 {direction}\n"
                       f"💰 Market: {mkt['price']:.2%} → Belief: {mkt['posterior']:.2%}\n"
-                      f"📈 EV: {ev:+.2%} | Confidence: {confirms}/3\n"
-                      f"BTC: ${btc:,.0f} | Updates: {mkt['updates']}\n"
+                      f"📈 EV: {ev:+.2%} | Confirms: {confirms}/3\n"
+                      f"⚡ Trigger: {triggers} | BTC: ${btc:,.0f}\n"
                       f"_Beefy quant engine • not financial advice_"))
         except Exception as e: print(f"⚠️ Group signal: {e}")
 
-        # ── Admin DM (full details + outcome) ────────────────────────────
+        # ── Admin DM ──────────────────────────────────────────────────────
         if ADMIN_CHAT_ID:
             try:
                 await application.bot.send_message(
@@ -345,12 +348,13 @@ async def run_signal_scan():
                           f"📌 {direction}\n"
                           f"💰 {mkt['price']:.2%} → {mkt['posterior']:.2%}\n"
                           f"📈 EV: {ev:+.2%} | KL: {kl:.4f} | {confirms}/3\n"
+                          f"⚡ Trigger: {triggers}\n"
                           f"💵 Bet: ${bet:.2f} | Bank: ${signal_bankroll:.2f}\n"
                           f"📉 DD: {dd:.1%} | Streak: {signal_consecutive_losses}\n"
                           f"🤖 {trade_status}"))
             except Exception as e: print(f"⚠️ Admin DM: {e}")
 
-        print(f"📊 Signal: {mkt['name']} — {direction} — {trade_status} — bank ${signal_bankroll:.2f}")
+        print(f"📊 {mkt['name'][:30]} — {direction} — {trade_status} — ${signal_bankroll:.2f}")
         mkt["posterior"] = 0.6 * mkt["price"] + 0.4 * mkt["posterior"]
 
 # ── Commands ─────────────────────────────────────────────────────────────────
@@ -358,7 +362,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "🐂 *Beefy Quant Engine*\n\n"
         "/signals — Toggle scanner on/off\n"
-        "/signalstatus — Dashboard\n"
+        "/signalstatus — Live dashboard\n"
+        "/trades — Trade history\n"
+        "/debug — Scanner internals\n"
         "/botbalance — Wallet balance\n"
         "/withdraw — Send USDC to personal wallet\n"
         "/pause /resume — Trading control\n"
@@ -371,26 +377,27 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def signals_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global polymarket_enabled, tracked_markets, signal_bankroll, signal_peak
-    global signal_trades, signal_consecutive_losses, signal_is_paused
+    global signal_trades, signal_consecutive_losses, signal_is_paused, markets_loaded_ts
     if not is_admin(update.effective_user):
         await update.message.reply_text("⛔ Admin only."); return
     polymarket_enabled = not polymarket_enabled
     if polymarket_enabled:
-        tracked_markets, signal_trades     = {}, []
-        signal_bankroll = signal_peak      = 50.0
-        signal_consecutive_losses          = 0
-        signal_is_paused                   = False
+        tracked_markets, signal_trades = {}, []
+        signal_bankroll = signal_peak  = 50.0
+        signal_consecutive_losses      = 0
+        signal_is_paused               = False
+        markets_loaded_ts              = 0.0
         await update.message.reply_text(
             "📊 *Signals: ON*\n"
             "Starting bankroll: $50.00\n"
-            "Scanning every 60s.\n"
-            "/signalstatus for dashboard | /signals to toggle off",
+            "Scanning every 60s | Cooldown: 5 min\n"
+            "/signalstatus — dashboard | /trades — history",
             parse_mode="Markdown")
         if ADMIN_CHAT_ID and str(update.effective_chat.id) != str(ADMIN_CHAT_ID):
             try:
                 await application.bot.send_message(
                     chat_id=int(ADMIN_CHAT_ID),
-                    text="🔒 *Signals ON*\n$50 bankroll | 20% trail stop | 8% max bet | 0.25x Kelly",
+                    text="🔒 *Signals ON*\n$50 bankroll | 20% trail stop | 8% max | 0.25x Kelly",
                     parse_mode="Markdown")
             except Exception: pass
     else:
@@ -404,22 +411,22 @@ async def signals_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def signalstatus_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not polymarket_enabled:
-        await update.message.reply_text("📊 Signals OFF. /signals to enable"); return
+        await update.message.reply_text("📊 Signals OFF — /signals to enable"); return
     mlines = []
     for _, mkt in list(tracked_markets.items())[:5]:
         d = mkt["posterior"] - mkt["price"]
         mlines.append(
-            f"  {safe_name(mkt['name'])[:35]}\n"
-            f"    {mkt['price']:.2%} → {mkt['posterior']:.2%} "
-            f"({'↑' if d > 0 else '↓'}{abs(d):.2%})")
-    mt = "\n".join(mlines) or "  Loading..."
+            f"  {safe_name(mkt['name'])[:32]}\n"
+            f"    Mkt:{mkt['price']:.2%} Post:{mkt['posterior']:.2%} "
+            f"({'↑' if d>0 else '↓'}{abs(d):.2%}) upd:{mkt['updates']}")
+    mt = "\n".join(mlines) or "  Loading markets..."
     if update.effective_chat.type == "private" and is_admin(update.effective_user):
         n, wins = len(signal_trades), sum(1 for t in signal_trades if t.get("won"))
         pnl = signal_bankroll - 50.0
         dd  = (signal_peak - signal_bankroll) / signal_peak if signal_peak else 0
         await update.message.reply_text(
             f"🔒 *Dashboard*\n\n"
-            f"Status: {'⏸ PAUSED' if signal_is_paused else '🟢 ACTIVE'} | "
+            f"{'⏸ PAUSED' if signal_is_paused else '🟢 ACTIVE'} | "
             f"Markets: {len(tracked_markets)}\n"
             f"💰 ${signal_bankroll:.2f} | PnL: ${pnl:+.2f} | DD: {dd:.1%}\n"
             f"Stop: ${signal_peak*(1-TRAIL_STOP):.2f} | "
@@ -432,6 +439,53 @@ async def signalstatus_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"{'⏸ PAUSED' if signal_is_paused else '🟢 ACTIVE'} | "
             f"{len(tracked_markets)} markets\n\n{mt}",
             parse_mode="Markdown")
+
+async def trades_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update.effective_user):
+        await update.message.reply_text("⛔ Admin only."); return
+    if not signal_trades:
+        await update.message.reply_text("📋 No trades yet this session."); return
+    recent = signal_trades[-10:]
+    lines  = [f"📋 *Last {len(recent)} Trades*\n"]
+    for t in recent:
+        icon = "✅" if t.get("won") else "❌"
+        lines.append(
+            f"{icon} {fmt_ts(t['ts'])} | {safe_name(t['market'])[:22]}\n"
+            f"   {t['direction'].split()[1]} | Bet:${t['bet']:.2f} "
+            f"PnL:{t['pnl']:+.2f} | Bank:${t['bankroll_after']:.2f}")
+    n    = len(signal_trades)
+    wins = sum(1 for t in signal_trades if t.get("won"))
+    pnl  = signal_bankroll - 50.0
+    lines.append(f"\nTotal: {n} | W:{wins} L:{n-wins} | "
+                 f"WR:{wins/max(n,1):.0%} | PnL:${pnl:+.2f}")
+    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+
+async def debug_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update.effective_user):
+        await update.message.reply_text("⛔ Admin only."); return
+    if not polymarket_enabled:
+        await update.message.reply_text("📊 Signals OFF."); return
+    lines = ["🔧 *Debug — Scanner State*\n"]
+    if btc_price_history:
+        lines.append(f"BTC history: {len(btc_price_history)} pts | "
+                     f"Latest: ${btc_price_history[-1][1]:,.0f}")
+    else:
+        lines.append("BTC: no data yet")
+    lines.append(f"Markets: {len(tracked_markets)}\n")
+    now = datetime.now(timezone.utc).timestamp()
+    for mid, mkt in list(tracked_markets.items())[:6]:
+        ev      = ev_gap(mkt["posterior"], mkt["price"])
+        conf    = abs(mkt["posterior"] - mkt["price"])
+        ago     = int((now - mkt["last_signal_ts"]) / 60) if mkt["last_signal_ts"] else None
+        cd_left = max(0, int((mkt["last_signal_ts"] + COOLDOWN - now) / 60)) if mkt["last_signal_ts"] else 0
+        lines.append(
+            f"  {safe_name(mkt['name'])[:30]}\n"
+            f"    Mkt:{mkt['price']:.2%} Post:{mkt['posterior']:.4f} "
+            f"EV:{ev:+.3f} Conf:{conf:.3f}\n"
+            f"    Upd:{mkt['updates']} | "
+            f"Last: {f'{ago}m ago' if ago is not None else 'never'} | "
+            f"CD:{cd_left}m")
+    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
 
 async def botbalance_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user):
@@ -551,7 +605,8 @@ async def send_daily_balance():
             text=(f"📊 *Daily Report*\n"
                   f"{'💰 $'+f'{bal:.2f}' if bal else '📝 Paper'} | "
                   f"Bank: ${signal_bankroll:.2f} | PnL: ${pnl:+.2f}\n"
-                  f"DD: {dd:.1%} | Trades: {n} (W:{wins} L:{n-wins})\n"
+                  f"DD: {dd:.1%} | Trades: {n} (W:{wins} L:{n-wins}) | "
+                  f"WR: {wins/max(n,1):.0%}\n"
                   f"{'LIVE' if TRADING_MODE=='live' else 'PAPER'} | "
                   f"{'⏸' if trading_paused else '▶️'}"))
     except Exception as e: print(f"⚠️ Daily balance DM: {e}")
@@ -594,6 +649,8 @@ def register_handlers():
     h(CommandHandler("help",           help_cmd))
     h(CommandHandler("signals",        signals_cmd))
     h(CommandHandler("signalstatus",   signalstatus_cmd))
+    h(CommandHandler("trades",         trades_cmd))
+    h(CommandHandler("debug",          debug_cmd))
     h(CommandHandler("botbalance",     botbalance_cmd))
     h(CommandHandler("withdraw",       withdraw_cmd))
     h(CommandHandler("cancel",         cancel_cmd))
@@ -611,7 +668,7 @@ async def startup():
     await init_clob()
     scheduler = AsyncIOScheduler(timezone="UTC")
     scheduler.add_job(safe_job, "interval", seconds=60,  args=[run_signal_scan,    30])
-    scheduler.add_job(safe_job, "cron",     hour=8, minute=5, args=[send_daily_balance, 15])
+    scheduler.add_job(safe_job, "cron", hour=8, minute=5, args=[send_daily_balance, 15])
     scheduler.add_job(safe_job, "interval", minutes=10,  args=[self_ping,          10])
     scheduler.start()
     print("✅ Scheduler: signals 60s | balance 08:05 UTC | ping 10m")
