@@ -50,6 +50,9 @@ LIKELIHOOD = {
     15: {"big_up":0.82,"small_up":0.65,"flat":0.50,"small_down":0.35,"big_down":0.18},
 }
 
+# Browser User-Agent bypasses cloud IP blocks on Polymarket and other APIs
+HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"}
+
 # ── Helpers ──────────────────────────────────────────────────────────────────
 def is_admin(user):
     return user.username == ADMIN_USERNAME.lstrip("@")
@@ -158,12 +161,12 @@ async def withdraw_usdc(to_addr, amount):
 # ── API Helpers ──────────────────────────────────────────────────────────────
 async def fetch_poly_markets():
     markets = []
-    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10)) as s:
+    async with aiohttp.ClientSession(headers=HEADERS, timeout=aiohttp.ClientTimeout(total=10)) as s:
         for kw in ["bitcoin", "btc", "ethereum", "eth", "crypto"]:
             try:
                 async with s.get("https://gamma-api.polymarket.com/markets",
                     params={"q": kw, "limit": 5, "active": "true", "closed": "false"}) as r:
-                    for m in await r.json():
+                    for m in await r.json(content_type=None):
                         mid = m.get("id") or m.get("condition_id", "")
                         if mid and mid not in [x.get("id") for x in markets]:
                             markets.append(m)
@@ -172,7 +175,7 @@ async def fetch_poly_markets():
 
 async def fetch_btc_eth():
     try:
-        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10)) as s:
+        async with aiohttp.ClientSession(headers=HEADERS, timeout=aiohttp.ClientTimeout(total=10)) as s:
             async with s.get("https://min-api.cryptocompare.com/data/pricemulti",
                 params={"fsyms": "BTC,ETH", "tsyms": "USD"}) as r:
                 data = await r.json(content_type=None)
@@ -222,7 +225,6 @@ async def run_signal_scan():
         if past and past > 0: rets[w] = (btc - past) / past
     if not rets: return
 
-    # Load on first run or refresh weekly
     if not tracked_markets or (ts - markets_loaded_ts) > 604800:
         tracked_markets = {}
         for m in (await fetch_poly_markets())[:8]:
@@ -237,14 +239,13 @@ async def run_signal_scan():
             if corr >= MIN_CORR:
                 tracked_markets[mid] = {
                     "name": name, "price": price,
-                    "posterior": 0.50,  # FIX: always neutral start, never anchored to market price
+                    "posterior": 0.50,
                     "correlation": corr, "last_signal_ts": 0, "updates": 0}
         markets_loaded_ts = ts
         if tracked_markets:
             print(f"📊 Loaded {len(tracked_markets)} markets")
 
     for mid, mkt in tracked_markets.items():
-        # FIX: update on every scan — no MOVE_THRESH filter
         for w in sorted(rets):
             mkt["posterior"] = bayes(mkt["posterior"], rets[w], w, mkt["correlation"])
             mkt["updates"] += 1
@@ -265,7 +266,6 @@ async def run_signal_scan():
         mkt["last_signal_ts"] = ts
         name = safe_name(mkt["name"])
 
-        # ── Paper trade ───────────────────────────────────────────────────
         trade_status = "📝 Paper"
         won = None; pnl = 0.0
 
@@ -291,7 +291,6 @@ async def run_signal_scan():
                                  f"Bankroll: ${signal_bankroll:.2f}")
                     except Exception: pass
 
-        # ── Live trading ──────────────────────────────────────────────────
         elif TRADING_MODE == "live" and clob_ready and not trading_paused:
             try:
                 raw    = await fetch_poly_markets()
@@ -325,7 +324,6 @@ async def run_signal_scan():
             "ev": ev, "bet": bet, "won": won, "pnl": pnl,
             "bankroll_after": signal_bankroll, "triggers": triggers})
 
-        # ── Group message ─────────────────────────────────────────────────
         try:
             await application.bot.send_message(
                 chat_id=int(TELEGRAM_GROUP_ID), parse_mode="Markdown",
@@ -338,7 +336,6 @@ async def run_signal_scan():
                       f"_Beefy quant engine • not financial advice_"))
         except Exception as e: print(f"⚠️ Group signal: {e}")
 
-        # ── Admin DM ──────────────────────────────────────────────────────
         if ADMIN_CHAT_ID:
             try:
                 await application.bot.send_message(
