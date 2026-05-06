@@ -50,7 +50,15 @@ LIKELIHOOD = {
     15: {"big_up":0.82,"small_up":0.65,"flat":0.50,"small_down":0.35,"big_down":0.18},
 }
 
-# Browser User-Agent bypasses cloud IP blocks on Polymarket and other APIs
+# Seed markets — used when Polymarket Gamma API is blocked from Render IPs
+SEED_MARKETS = [
+    {"id": "seed_btc_110k", "name": "Will BTC exceed 110k by July 2025",   "price": 0.35, "corr": 0.90},
+    {"id": "seed_btc_120k", "name": "Will BTC exceed 120k by Dec 2025",    "price": 0.25, "corr": 0.90},
+    {"id": "seed_eth_5k",   "name": "Will ETH exceed 5k by Dec 2025",      "price": 0.20, "corr": 0.82},
+    {"id": "seed_btc_80k",  "name": "Will BTC drop below 80k by June 2025","price": 0.12, "corr": 0.90},
+    {"id": "seed_mcap_4t",  "name": "Crypto market cap above 4T in 2025",  "price": 0.30, "corr": 0.78},
+]
+
 HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"}
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -225,9 +233,11 @@ async def run_signal_scan():
         if past and past > 0: rets[w] = (btc - past) / past
     if not rets: return
 
+    # Load markets: try Polymarket API first, fall back to seed markets
     if not tracked_markets or (ts - markets_loaded_ts) > 604800:
         tracked_markets = {}
-        for m in (await fetch_poly_markets())[:8]:
+        raw = await fetch_poly_markets()
+        for m in raw[:8]:
             mid    = m.get("id") or m.get("condition_id", "")
             name   = m.get("question", m.get("title", "Unknown"))[:60]
             tokens = m.get("tokens", [])
@@ -238,12 +248,18 @@ async def run_signal_scan():
                       else 0.78 if any(k in nl for k in ["crypto", "market cap"]) else 0.50)
             if corr >= MIN_CORR:
                 tracked_markets[mid] = {
-                    "name": name, "price": price,
-                    "posterior": 0.50,
+                    "name": name, "price": price, "posterior": 0.50,
                     "correlation": corr, "last_signal_ts": 0, "updates": 0}
+        # Fallback: if API blocked or returned nothing useful, use seed markets
+        if not tracked_markets:
+            for s in SEED_MARKETS:
+                tracked_markets[s["id"]] = {
+                    "name": s["name"], "price": s["price"], "posterior": 0.50,
+                    "correlation": s["corr"], "last_signal_ts": 0, "updates": 0}
+            print(f"📊 API blocked — loaded {len(tracked_markets)} seed markets")
+        else:
+            print(f"📊 Loaded {len(tracked_markets)} live markets")
         markets_loaded_ts = ts
-        if tracked_markets:
-            print(f"📊 Loaded {len(tracked_markets)} markets")
 
     for mid, mkt in tracked_markets.items():
         for w in sorted(rets):
@@ -561,7 +577,8 @@ async def testconn_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         lines.append(f"Balance: ${bal:.2f}" if bal else "Balance: failed")
     try:
         mkts = await fetch_poly_markets()
-        lines.append(f"✅ Polymarket: {len(mkts)} markets")
+        lines.append(f"✅ Polymarket: {len(mkts)} markets" if mkts
+                     else "⚠️ Polymarket: blocked (using seed markets)")
     except Exception as e: lines.append(f"❌ Polymarket: {e}")
     try:
         p       = await fetch_btc_eth()
