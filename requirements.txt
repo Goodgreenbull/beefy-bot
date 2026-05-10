@@ -3,5 +3,3 @@ python-telegram-bot[webhooks]>=22.7
 aiohttp>=3.9.0
 APScheduler>=3.10.0
 hypercorn>=0.17.0
-py-clob-client>=0.34.0
-web3>=6.0.0

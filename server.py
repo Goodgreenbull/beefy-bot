@@ -1,689 +1,1062 @@
-# GGB Beefy Bot — Polymarket Quant Trading Engine
-# Built on Base | Powered by Beefy 🐂
+# =============================================================================
+# GGB BEEFY BOT v2 — server.py
+# Good Green Bull | Built on Base | Brand Engine
+# =============================================================================
 
-import os, asyncio, random, math, aiohttp
-from datetime import datetime, timezone
+import os
+import asyncio
+import random
+import aiohttp
+from datetime import datetime, timezone, timedelta
 from quart import Quart, request
-from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
+from telegram import (
+    Update, InlineKeyboardButton, InlineKeyboardMarkup,
+    ChatPermissions, ChatMember
+)
+from telegram.ext import (
+    ApplicationBuilder, CommandHandler, CallbackQueryHandler,
+    MessageHandler, ChatMemberHandler, ContextTypes, filters
+)
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
-# ── Config ───────────────────────────────────────────────────────────────────
-TOKEN             = os.getenv("BOT_TOKEN")
-ADMIN_USERNAME    = os.getenv("ADMIN_USERNAME", "BeefytheBull")
-ADMIN_CHAT_ID     = os.getenv("ADMIN_CHAT_ID")
+# =============================================================================
+# CONFIG
+# =============================================================================
+
+TOKEN            = os.getenv("BOT_TOKEN")
+BASESCAN_API_KEY = os.getenv("BASESCAN_API_KEY")
+ADMIN_USERNAME   = os.getenv("ADMIN_USERNAME", "JS0nbase")
+ADMIN_CHAT_ID    = os.getenv("ADMIN_CHAT_ID")
 TELEGRAM_GROUP_ID = os.getenv("TELEGRAM_GROUP_ID")
-POLYMARKET_PK     = os.getenv("POLYMARKET_PRIVATE_KEY")
-POLYMARKET_WALLET = os.getenv("POLYMARKET_WALLET_ADDRESS")
-PERSONAL_WALLET   = os.getenv("YOUR_PERSONAL_WALLET")
-TRADING_MODE      = os.getenv("TRADING_MODE", "paper")
-WEBHOOK_PATH      = f"/webhook/{TOKEN}"
-WEBHOOK_URL       = f"https://beefy-bot.onrender.com{WEBHOOK_PATH}"
+
+WEBHOOK_PATH = f"/webhook/{TOKEN}"
+WEBHOOK_URL  = f"https://beefy-bot.onrender.com{WEBHOOK_PATH}"
+GGB_CONTRACT = "0xc2758c05916ba20b19358f1e96f597774e603050"
+
+# =============================================================================
+# APP INIT
+# =============================================================================
 
 app         = Quart(__name__)
 application = ApplicationBuilder().token(TOKEN).build()
 
-# ── State ────────────────────────────────────────────────────────────────────
-polymarket_enabled        = False
-signal_bankroll           = 50.0
-signal_peak               = 50.0
-signal_trades             = []
-signal_consecutive_losses = 0
-signal_is_paused          = False
-signal_pause_until        = 0.0
-btc_price_history         = []
-eth_price_history         = []
-tracked_markets           = {}
-markets_loaded_ts         = 0.0
-clob_client               = None
-clob_ready                = False
-trading_paused            = False
+# =============================================================================
+# STATE — In-memory. Resets on restart. Fine for free tier.
+# =============================================================================
 
-# ── Signal Config ────────────────────────────────────────────────────────────
-EV_THRESH    = 0.12;  FEE_PCT     = 0.02;  MIN_CONF    = 0.12
-MIN_CORR     = 0.80;  KELLY_FRAC  = 0.25;  MAX_BET     = 0.08
-TRAIL_STOP   = 0.20;  PRIOR_DECAY = 0.95;  COOLDOWN    = 300
+user_spam_tracker   = {}
+recent_bull_indices = []
+gm_tracker          = {}
+gm_tracker_date     = None
+gm_streaks          = {}     # {user_id: {"name": str, "current": int, "best": int, "last_date": date}}
+last_milestone      = 0      # Last celebrated member count milestone
+alerted_tokens      = set()  # Token addresses already alerted (prevent spam)
 
-LIKELIHOOD = {
-    1:  {"big_up":0.72,"small_up":0.58,"flat":0.50,"small_down":0.42,"big_down":0.28},
-    5:  {"big_up":0.78,"small_up":0.62,"flat":0.50,"small_down":0.38,"big_down":0.22},
-    15: {"big_up":0.82,"small_up":0.65,"flat":0.50,"small_down":0.35,"big_down":0.18},
-}
+# =============================================================================
+# BULL QUOTES BANK
+# =============================================================================
 
-# Seed markets — used when Polymarket Gamma API is blocked from Render IPs
-SEED_MARKETS = [
-    {"id": "seed_btc_110k", "name": "Will BTC exceed 110k by July 2025",   "price": 0.35, "corr": 0.90},
-    {"id": "seed_btc_120k", "name": "Will BTC exceed 120k by Dec 2025",    "price": 0.25, "corr": 0.90},
-    {"id": "seed_eth_5k",   "name": "Will ETH exceed 5k by Dec 2025",      "price": 0.20, "corr": 0.82},
-    {"id": "seed_btc_80k",  "name": "Will BTC drop below 80k by June 2025","price": 0.12, "corr": 0.90},
-    {"id": "seed_mcap_4t",  "name": "Crypto market cap above 4T in 2025",  "price": 0.30, "corr": 0.78},
+bull_quotes = [
+    "The market rewards patience. The builder rewards himself. \ud83d\udc02\ud83d\udc9a",
+    "Quiet stretches separate the builders from the tourists. \ud83d\udc02\ud83d\udc9a",
+    "Ship ugly. Fix fast. Ship again. \ud83d\udee0\ufe0f\ud83d\udc9a",
+    "Nobody's watching the process. That's the point. \ud83d\udc02\ud83c\udf3f",
+    "The signal is quiet. Keep going anyway. \ud83d\udc02\ud83d\udc9a",
+    "You don't outwork the market. You outlast it. \ud83d\udc02\ud83d\udc9a",
+    "Conviction is a practice, not a feeling. \ud83d\udc9a\ud83d\udc02",
+    "Most quit before the compound kicks in. \ud83d\udc02\ud83d\udc9a",
+    "Build mode doesn't need an announcement. \ud83d\udee0\ufe0f\ud83d\udc02",
+    "Progress doesn't ask for permission. \ud83d\udc9a\ud83d\udc02",
+    "The ones still building in the noise are the ones worth watching. \ud83d\udc02\ud83d\udc9a",
+    "Hold the line. The line is the work. \ud83d\udc02\ud83d\udc9a",
+    "Momentum is just small moves that didn't stop. \ud83d\udcc8\ud83d\udc02",
+    "No one remembers the hype. Everyone remembers what lasted. \ud83d\udc02\ud83d\udc9a",
+    "Ship because it sharpens you, not because it trends. \ud83d\udee0\ufe0f\ud83d\udc9a",
+    "If you're still here, you already passed the first filter. \ud83d\udc02\ud83d\udc9a",
+    "Systems beat sprints every time. \ud83d\udcc8\ud83d\udc02",
+    "Build for the version of yourself that's still here in two years. \ud83d\udc02\ud83d\udc9a",
+    "The grind is not the goal. The grind is the gate. \ud83d\udc9a\ud83d\udc02",
+    "Locked in. Herd strong. We move. \ud83d\udc02\ud83d\udc9a",
 ]
 
-HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"}
+# =============================================================================
+# CONTENT CALENDAR — Daily themed posts
+# =============================================================================
 
-# ── Helpers ──────────────────────────────────────────────────────────────────
-def is_admin(user):
+# 0=Monday, 1=Tuesday, ... 6=Sunday
+DAILY_THEMES = {
+    0: {
+        "title": "\ud83d\udcaa Motivation Monday",
+        "prompts": [
+            "New week. New reps. What's the one thing you're locking in this week? \ud83d\udc47",
+            "Monday energy: name one thing you're shipping before Friday \ud83d\udee0\ufe0f",
+            "The week belongs to the ones who start. What's your first move? \ud83d\udc02",
+            "Most people plan on Monday and quit by Wednesday. Not this herd. What's yours? \ud83d\udc9a",
+            "Momentum starts now. What are you building this week? \ud83d\udc47",
+        ],
+    },
+    1: {
+        "title": "\ud83e\udde0 Alpha Tuesday",
+        "prompts": [
+            "Drop one thing you learned recently that changed how you think \ud83d\udc47",
+            "Best thread, podcast, or article you consumed this week? Share it \ud83e\udde0",
+            "What's one alpha that most people are sleeping on right now? \ud83d\udc47",
+            "Share a tool, strategy, or insight that levelled you up recently \ud83d\udc9a",
+            "What's something you know now that you wish you knew 6 months ago? \ud83d\udc47",
+        ],
+    },
+    2: {
+        "title": "\ud83d\udee0\ufe0f Builder Wednesday",
+        "prompts": [
+            "Midweek check: what have you shipped so far this week? \ud83d\udc47",
+            "Show your work. Screenshot, link, or progress update \u2014 drop it \ud83d\udee0\ufe0f",
+            "Builder Wednesday: what's the hardest part of what you're building right now? \ud83d\udc47",
+            "What's one thing on your build list that keeps getting pushed back? \ud83d\udc02",
+            "Share what you're working on. No pitch, just progress \ud83d\udc9a",
+        ],
+    },
+    3: {
+        "title": "\ud83d\udcc8 Base Thursday",
+        "prompts": [
+            "What's the most interesting project you've seen on Base lately? \ud83d\udc47",
+            "Base ecosystem check: what token or dApp caught your eye this week? \ud83d\udcc8",
+            "If you could only hold 3 Base projects long term \u2014 what makes the cut? \ud83d\udc02",
+            "What does Base need more of right now? Builders, speak up \ud83d\udc47",
+            "Drop a Base project that deserves more attention \ud83d\udc9a",
+        ],
+    },
+    4: {
+        "title": "\ud83d\udd25 Flex Friday",
+        "prompts": [
+            "It's Friday. What's your W this week? Big or small, drop it \ud83d\udc47 \ud83d\udd25",
+            "Flex Friday: what did you accomplish that you're proud of? \ud83d\udc9a",
+            "End the week strong. What's one thing that went right? \ud83d\udc02",
+            "Friday flex: show a win, a ship, or a lesson from this week \ud83d\udc47",
+            "The weekend is earned. What did you build to deserve yours? \ud83d\udd25",
+        ],
+    },
+    5: {
+        "title": "\ud83c\udf3f Chill Saturday",
+        "prompts": [
+            "Saturday vibes. What are you recharging with today? \ud83c\udf3f",
+            "Builders need rest too. What's your go-to way to switch off? \ud83d\udc47",
+            "Weekend mode. Reading, gaming, touching grass \u2014 what's the move? \ud83d\udc02\ud83d\udc9a",
+            "No hustle today. Just vibes. What's good in your world? \ud83c\udf3f",
+            "Saturday reset. What are you grateful for this week? \ud83d\udc9a",
+        ],
+    },
+    6: {
+        "title": "\ud83d\udccb Sunday Reset",
+        "prompts": [
+            "Sunday planning: what's the #1 priority for next week? \ud83d\udc47",
+            "Reset day. What are you carrying forward and what are you dropping? \ud83d\udc02",
+            "Sunday question: what would make next week a 10/10? \ud83d\udc9a",
+            "End of week. Rate your week 1-10 and tell us why \ud83d\udc47",
+            "Tomorrow starts a new cycle. What's the play? \ud83d\udccb",
+        ],
+    },
+}
+
+# =============================================================================
+# WEEKLY ENGAGEMENT QUESTIONS — Rotates by week number
+# =============================================================================
+
+weekly_questions = [
+    "What's the one thing you're shipping this week? Drop it below \ud83d\udee0\ufe0f",
+    "Best Base project you've used this week? Go \ud83d\udc47",
+    "If you had to cut everything except one project \u2014 what stays? \ud83d\udc02",
+    "What's one tool (AI or otherwise) that's genuinely changed how you build? \ud83d\udc47",
+    "Biggest lesson from your last build? Keep it real \ud83d\udc47",
+    "What would make you check this group every single day? Tell us \ud83d\udc02\ud83d\udc9a",
+    "One word that describes your build mindset this week \ud83d\udc47",
+    "What's the most underrated thing happening on Base right now? \ud83d\udc02",
+    "If GGB dropped a product tomorrow \u2014 what would you want it to be? \ud83d\udc47",
+    "What does winning look like for you in the next 90 days? \ud83d\udc02\ud83d\udc9a",
+]
+
+# =============================================================================
+# DISCUSSION TOPICS — Extra daily conversation starters (posted at 12:00 UTC)
+# =============================================================================
+
+discussion_topics = [
+    "Hot take time: what's one popular crypto opinion you disagree with? \ud83d\udd25",
+    "If you had $100 to put into one Base token today \u2014 where's it going? \ud83d\udc47",
+    "Builders vs traders \u2014 which one are you and why? \ud83d\udc02",
+    "What's the biggest mistake you've made in crypto? No judgment \ud83d\udc9a",
+    "AI + crypto \u2014 overrated, underrated, or perfectly rated? \ud83e\udde0",
+    "Name a project that died but had a great idea worth reviving \ud83d\udc47",
+    "What separates a good community from a dead one? Real answers only \ud83d\udc02",
+    "If you could mass-adopt ONE thing about Web3 \u2014 what would it be? \ud83d\udc9a",
+    "Unpopular opinion: memecoins are ______ . Fill in the blank \ud83d\udc47",
+    "Best trade you ever made? Worst? Drop both \ud83d\udcc8\ud83d\udcc9",
+    "What would you build if money and time weren't a factor? \ud83d\udee0\ufe0f",
+    "Is on-chain reputation the next big thing or just hype? \ud83e\udde0",
+    "DeFi, NFTs, or social \u2014 what's the next big wave? \ud83d\udc47",
+    "What's one thing the crypto space needs to stop doing? \ud83d\udd25",
+    "If you had to explain Base to your nan \u2014 how would you do it? \ud83d\udc02\ud83d\udc9a",
+    "What's your daily crypto routine? Walk us through it \ud83d\udc47",
+    "One year from now \u2014 where do you see yourself? Be specific \ud83d\udc9a",
+    "What project outside of crypto inspires how you build? \ud83d\udee0\ufe0f",
+    "Would you rather have 10k followers or 100 paying customers? \ud83d\udc47",
+    "What's the most underrated skill in crypto right now? \ud83e\udde0",
+]
+
+# =============================================================================
+# ROTATING CTAs — Product/brand pushes (attached to daily post)
+# =============================================================================
+
+rotating_ctas = [
+    "\ud83d\udee0\ufe0f Build your own brand on Base \u2192 https://goodgreenbull.gumroad.com",
+    "\ud83c\udfa8 Beefy Prime NFTs dropping soon \u2014 follow @goodgreenbull on X for the date \ud83d\udc02",
+    "\ud83c\udf10 goodgreenbull.com \u2014 the home of the herd \ud83d\udc9a",
+    "\ud83d\udd4a\ufe0f Follow the bull on X \u2192 https://x.com/goodgreenbull",
+    "\ud83d\udce3 Share this group with a builder \u2192 https://t.me/goodgreenbull",
+    "\ud83d\udee0\ufe0f GGB Builder Kit \u2014 templates, prompts, brand system \u2192 https://goodgreenbull.gumroad.com",
+]
+
+# =============================================================================
+# MILESTONE THRESHOLDS
+# =============================================================================
+
+MILESTONES = [25, 50, 75, 100, 150, 200, 250, 500, 750, 1000, 2500, 5000, 10000]
+
+# =============================================================================
+# REACTIVE REPLY KEYWORDS
+# =============================================================================
+
+REACTIVE_REPLIES = {
+    "base": [
+        "Base is the move. \ud83d\udc02\ud83d\udc9a",
+        "Building on Base hits different. \ud83d\udc9a",
+        "Base chain, best chain. \ud83d\udee0\ufe0f\ud83d\udc02",
+    ],
+    "token": [
+        "Tokens come and go. Builders stay. \ud83d\udc02",
+        "Always DYOR. The herd is smart. \ud83d\udc9a",
+        "What token's got your attention? \ud83d\udc47",
+    ],
+    "build": [
+        "Builder energy detected. \ud83d\udee0\ufe0f\ud83d\udc9a",
+        "Ship it. Fix it. Ship again. \ud83d\udc02",
+        "That's the builder mindset. Lock in. \ud83d\udc9a",
+    ],
+    "ship": [
+        "Ship > talk. Always. \ud83d\udee0\ufe0f\ud83d\udc02",
+        "Shipped? Respect. \ud83d\udc9a",
+        "The ones who ship are the ones who win. \ud83d\udc02",
+    ],
+    "ggb": [
+        "GGB \ud83d\udc02\ud83d\udc9a Herd strong.",
+        "Good Green Bull. Built to last. \ud83d\udc9a",
+        "The bull that doesn't stop. \ud83d\udc02\ud83d\udc9a",
+    ],
+    "bull": [
+        "Bull mode activated. \ud83d\udc02\ud83d\udc9a",
+        "The herd stays bullish. \ud83d\udc9a",
+        "Beefy approves. \ud83d\udc02",
+    ],
+    "wagmi": [
+        "WAGMI \u2014 but only if you keep building. \ud83d\udc02\ud83d\udc9a",
+        "WAGMI. Herd strong. \ud83d\udc9a",
+    ],
+    "ngmi": [
+        "Not with that attitude. Lock in. \ud83d\udc02",
+        "Nah, we don't do that here. WAGMI. \ud83d\udc9a",
+    ],
+    "gn": [
+        "GN bull. Rest up, we build tomorrow. \ud83d\udc02\ud83d\udc9a",
+        "GN \ud83d\udc9a See you at the next GM.",
+    ],
+}
+
+# =============================================================================
+# HELPERS
+# =============================================================================
+
+def get_bull_quote() -> str:
+    global recent_bull_indices
+    available = [i for i in range(len(bull_quotes)) if i not in recent_bull_indices]
+    if not available:
+        recent_bull_indices = []
+        available = list(range(len(bull_quotes)))
+    idx = random.choice(available)
+    recent_bull_indices.append(idx)
+    if len(recent_bull_indices) > 7:
+        recent_bull_indices.pop(0)
+    return bull_quotes[idx]
+
+
+async def fetch_price_data():
+    """Fetch GGB price from DexScreener."""
+    url = f"https://api.dexscreener.com/latest/dex/tokens/{GGB_CONTRACT}"
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                data = await resp.json()
+                pair = data["pairs"][0]
+                price = float(pair["priceUsd"])
+                change = float(pair.get("priceChange", {}).get("h24", 0))
+                return price, change
+    except Exception:
+        return None, None
+
+
+async def fetch_wallet_balance(address: str):
+    """Fetch GGB token balance for a wallet."""
+    url = (
+        f"https://api.basescan.org/api?module=account&action=tokenbalance"
+        f"&contractaddress={GGB_CONTRACT}&address={address}"
+        f"&tag=latest&apikey={BASESCAN_API_KEY}"
+    )
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                data = await resp.json()
+                if data["status"] == "1":
+                    return int(data["result"]) / 10**18
+    except Exception:
+        pass
+    return None
+
+
+async def fetch_base_trending_tokens():
+    """
+    Fetch trending/new tokens on Base from DexScreener.
+    Returns list of token dicts with name, symbol, price, change, volume, address.
+    """
+    try:
+        async with aiohttp.ClientSession() as session:
+            # Get latest token profiles
+            async with session.get(
+                "https://api.dexscreener.com/token-profiles/latest/v1",
+                timeout=aiohttp.ClientTimeout(total=10),
+            ) as resp:
+                profiles = await resp.json()
+
+            # Filter for Base chain tokens
+            base_tokens = [p for p in profiles if p.get("chainId") == "base"][:20]
+
+            # Get price data for each
+            trending = []
+            for token in base_tokens[:10]:
+                addr = token.get("tokenAddress", "")
+                if not addr or addr in alerted_tokens:
+                    continue
+                try:
+                    async with session.get(
+                        f"https://api.dexscreener.com/latest/dex/tokens/{addr}",
+                        timeout=aiohttp.ClientTimeout(total=8),
+                    ) as resp2:
+                        data = await resp2.json()
+                        pairs = data.get("pairs", [])
+                        if not pairs:
+                            continue
+                        pair = pairs[0]
+                        vol = float(pair.get("volume", {}).get("h24", 0))
+                        change = float(pair.get("priceChange", {}).get("h24", 0))
+                        liquidity = float(pair.get("liquidity", {}).get("usd", 0))
+                        # Only alert on tokens with real activity
+                        if vol >= 10000 and liquidity >= 5000:
+                            trending.append({
+                                "name": pair.get("baseToken", {}).get("name", "Unknown"),
+                                "symbol": pair.get("baseToken", {}).get("symbol", "???"),
+                                "price": float(pair.get("priceUsd", 0)),
+                                "change_24h": change,
+                                "volume_24h": vol,
+                                "liquidity": liquidity,
+                                "address": addr,
+                                "url": pair.get("url", ""),
+                            })
+                except Exception:
+                    continue
+
+            # Sort by volume
+            trending.sort(key=lambda x: x["volume_24h"], reverse=True)
+            return trending[:5]
+    except Exception as e:
+        print(f"\u26a0\ufe0f Base token scan failed: {e}")
+        return []
+
+
+def is_admin(user) -> bool:
+    """Check if user is admin \u2014 by chat ID first, then username."""
+    if ADMIN_CHAT_ID and str(user.id) == str(ADMIN_CHAT_ID):
+        return True
     return user.username == ADMIN_USERNAME.lstrip("@")
 
-def safe_name(name):
-    for c in ["*", "_", "`", "["]:
-        name = name.replace(c, "")
-    return name
 
-def fmt_ts(ts):
-    return datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%d/%m %H:%M")
+def format_price(price_val: float, change: float) -> str:
+    change_str = f"+{change:.2f}%" if change >= 0 else f"{change:.2f}%"
+    arrow = "\ud83d\udcc8" if change >= 0 else "\ud83d\udcc9"
+    return f"\ud83d\udcb5 GGB: ${price_val:.6f}\n{arrow} 24h: {change_str}"
 
-def classify(r):
-    if r > 0.01:   return "big_up"
-    if r > 0.002:  return "small_up"
-    if r < -0.01:  return "big_down"
-    if r < -0.002: return "small_down"
-    return "flat"
 
-def likelihood(r, w, corr=1.0):
-    base = LIKELIHOOD.get(w, LIKELIHOOD[5])[classify(r)]
-    return max(0.01, min(0.99, 0.5 + (base - 0.5) * corr))
+def reset_gm_if_needed():
+    global gm_tracker, gm_tracker_date
+    today = datetime.now(timezone.utc).date()
+    if gm_tracker_date != today:
+        gm_tracker = {}
+        gm_tracker_date = today
 
-def bayes(prior, r, w, corr):
-    ph  = 0.5 + (prior - 0.5) * PRIOR_DECAY
-    peh = likelihood(r, w, corr)
-    pe  = peh * ph + (1 - peh) * (1 - ph)
-    return max(0.05, min(0.95, (peh * ph) / max(pe, 1e-10)))
 
-def ev_gap(p, mkt):   return (p - mkt) - mkt * FEE_PCT
+def update_gm_streak(user_id, name):
+    """Track consecutive GM days for a user."""
+    today = datetime.now(timezone.utc).date()
+    if user_id not in gm_streaks:
+        gm_streaks[user_id] = {"name": name, "current": 1, "best": 1, "last_date": today}
+        return 1
 
-def kelly(p, mkt):
-    if mkt <= 0 or mkt >= 1: return 0.0
-    odds = 1 / mkt - 1
-    return max(0.0, min(1.0, (p * odds - (1 - p)) / odds)) if odds > 0 else 0.0
+    streak = gm_streaks[user_id]
+    streak["name"] = name
 
-def kl_div(p, q):
-    p, q = max(.001, min(.999, p)), max(.001, min(.999, q))
-    return p * math.log(p / q) + (1 - p) * math.log((1 - p) / (1 - q))
+    if streak["last_date"] == today:
+        return streak["current"]  # Already counted today
 
-def calc_bet(bankroll, p, mkt):
-    return max(0, min(kelly(p, mkt) * KELLY_FRAC * bankroll, bankroll * MAX_BET, bankroll - 2.0))
+    if streak["last_date"] == today - timedelta(days=1):
+        streak["current"] += 1  # Consecutive day
+    else:
+        streak["current"] = 1   # Streak broken
 
-def paper_payout(bet, mkt_price, won):
-    return bet * (1.0 / mkt_price - 1.0) - bet * FEE_PCT if won else -bet
+    streak["best"] = max(streak["best"], streak["current"])
+    streak["last_date"] = today
+    return streak["current"]
 
-# ── CLOB Client ──────────────────────────────────────────────────────────────
-async def init_clob():
-    global clob_client, clob_ready
-    if not POLYMARKET_PK or TRADING_MODE != "live":
-        print(f"📊 Mode: {TRADING_MODE} (CLOB not initialised)"); return
-    try:
-        from py_clob_client.client import ClobClient
-        clob_client = ClobClient("https://clob.polymarket.com", key=POLYMARKET_PK,
-                                  chain_id=137, signature_type=0, funder=POLYMARKET_WALLET)
-        clob_client.set_api_creds(clob_client.create_or_derive_api_creds())
-        clob_ready = True
-        print(f"✅ CLOB ready — {POLYMARKET_WALLET[:10]}...")
-    except Exception as e:
-        print(f"⚠️ CLOB init failed: {e}")
+# =============================================================================
+# COMMANDS
+# =============================================================================
 
-async def clob_order(token_id, side, price, size):
-    if not clob_ready or not clob_client or trading_paused: return None
-    try:
-        from py_clob_client.clob_types import OrderArgs, OrderType
-        from py_clob_client.order_builder.constants import BUY, SELL
-        o = OrderArgs(token_id=token_id, price=round(price, 2),
-                      size=round(size, 1), side=BUY if side == "BUY" else SELL)
-        return clob_client.post_order(clob_client.create_order(o), OrderType.GTC)
-    except Exception as e:
-        print(f"⚠️ Order failed: {e}"); return None
-
-async def clob_balance():
-    if not clob_ready or not clob_client: return None
-    try:
-        from py_clob_client.clob_types import BalanceAllowanceParams, AssetType
-        b = clob_client.get_balance_allowance(
-            BalanceAllowanceParams(asset_type=AssetType.COLLATERAL))
-        return float(b["balance"]) / 1e6 if b and "balance" in b else None
-    except Exception as e:
-        print(f"⚠️ Balance check failed: {e}"); return None
-
-async def withdraw_usdc(to_addr, amount):
-    if not POLYMARKET_PK: return False, "No private key"
-    try:
-        from web3 import Web3
-        w3  = Web3(Web3.HTTPProvider("https://polygon-rpc.com"))
-        abi = [{"constant":False,"inputs":[{"name":"to","type":"address"},
-                {"name":"value","type":"uint256"}],"name":"transfer",
-                "outputs":[{"name":"","type":"bool"}],"type":"function"}]
-        c   = w3.eth.contract(address=Web3.to_checksum_address(
-                "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174"), abi=abi)
-        tx  = c.functions.transfer(
-            Web3.to_checksum_address(to_addr), int(amount * 1e6)
-        ).build_transaction({
-            "from":     Web3.to_checksum_address(POLYMARKET_WALLET),
-            "nonce":    w3.eth.get_transaction_count(Web3.to_checksum_address(POLYMARKET_WALLET)),
-            "gas":      100000, "gasPrice": w3.eth.gas_price, "chainId": 137})
-        signed  = w3.eth.account.sign_transaction(tx, POLYMARKET_PK)
-        receipt = w3.eth.wait_for_transaction_receipt(
-            w3.eth.send_raw_transaction(signed.raw_transaction), timeout=60)
-        if receipt["status"] == 1: return True, receipt["transactionHash"].hex()
-        return False, "Reverted"
-    except Exception as e: return False, str(e)
-
-# ── API Helpers ──────────────────────────────────────────────────────────────
-async def fetch_poly_markets():
-    markets = []
-    async with aiohttp.ClientSession(headers=HEADERS, timeout=aiohttp.ClientTimeout(total=10)) as s:
-        for kw in ["bitcoin", "btc", "ethereum", "eth", "crypto"]:
-            try:
-                async with s.get("https://gamma-api.polymarket.com/markets",
-                    params={"q": kw, "limit": 5, "active": "true", "closed": "false"}) as r:
-                    for m in await r.json(content_type=None):
-                        mid = m.get("id") or m.get("condition_id", "")
-                        if mid and mid not in [x.get("id") for x in markets]:
-                            markets.append(m)
-            except Exception as e: print(f"⚠️ Poly fetch ({kw}): {e}")
-    return markets
-
-async def fetch_btc_eth():
-    try:
-        async with aiohttp.ClientSession(headers=HEADERS, timeout=aiohttp.ClientTimeout(total=10)) as s:
-            async with s.get("https://min-api.cryptocompare.com/data/pricemulti",
-                params={"fsyms": "BTC,ETH", "tsyms": "USD"}) as r:
-                data = await r.json(content_type=None)
-                btc  = float(data["BTC"]["USD"])
-                eth  = float(data["ETH"]["USD"])
-                if btc > 0:
-                    return {"bitcoin": {"usd": btc}, "ethereum": {"usd": eth}}
-    except Exception as e:
-        print(f"⚠️ Price feed: {e}")
-    return {}
-
-# ── Signal Scanner ───────────────────────────────────────────────────────────
-async def run_signal_scan():
-    global signal_bankroll, signal_peak, signal_consecutive_losses
-    global signal_is_paused, signal_pause_until, tracked_markets, markets_loaded_ts
-
-    if not polymarket_enabled or not TELEGRAM_GROUP_ID: return
-
-    now = datetime.now(timezone.utc).timestamp()
-    if signal_is_paused:
-        if now < signal_pause_until: return
-        signal_is_paused = False
-        if ADMIN_CHAT_ID:
-            try:
-                await application.bot.send_message(
-                    chat_id=int(ADMIN_CHAT_ID),
-                    text="▶️ Streak pause lifted — scanner resuming.")
-            except Exception: pass
-
-    if signal_bankroll <= signal_peak * (1 - TRAIL_STOP): return
-
-    prices = await fetch_btc_eth()
-    btc    = prices.get("bitcoin", {}).get("usd")
-    if not btc: return
-
-    ts  = now
-    eth = prices.get("ethereum", {}).get("usd")
-    btc_price_history.append((ts, btc))
-    if eth: eth_price_history.append((ts, eth))
-    cutoff = ts - 1200
-    btc_price_history[:] = [(t, p) for t, p in btc_price_history if t >= cutoff]
-    eth_price_history[:] = [(t, p) for t, p in eth_price_history if t >= cutoff]
-
-    rets = {}
-    for w in [1, 5, 15]:
-        past = next((p for t, p in reversed(btc_price_history) if t <= ts - w * 60), None)
-        if past and past > 0: rets[w] = (btc - past) / past
-    if not rets: return
-
-    # Load markets: try Polymarket API first, fall back to seed markets
-    if not tracked_markets or (ts - markets_loaded_ts) > 604800:
-        tracked_markets = {}
-        raw = await fetch_poly_markets()
-        for m in raw[:8]:
-            mid    = m.get("id") or m.get("condition_id", "")
-            name   = m.get("question", m.get("title", "Unknown"))[:60]
-            tokens = m.get("tokens", [])
-            price  = max(0.05, min(0.95, float(tokens[0].get("price", 0.5)) if tokens else 0.5))
-            nl     = name.lower()
-            corr   = (0.90 if any(k in nl for k in ["btc", "bitcoin", "$100k", "$90k"])
-                      else 0.82 if any(k in nl for k in ["eth", "ethereum"])
-                      else 0.78 if any(k in nl for k in ["crypto", "market cap"]) else 0.50)
-            if corr >= MIN_CORR:
-                tracked_markets[mid] = {
-                    "name": name, "price": price, "posterior": 0.50,
-                    "correlation": corr, "last_signal_ts": 0, "updates": 0}
-        # Fallback: if API blocked or returned nothing useful, use seed markets
-        if not tracked_markets:
-            for s in SEED_MARKETS:
-                tracked_markets[s["id"]] = {
-                    "name": s["name"], "price": s["price"], "posterior": 0.50,
-                    "correlation": s["corr"], "last_signal_ts": 0, "updates": 0}
-            print(f"📊 API blocked — loaded {len(tracked_markets)} seed markets")
-        else:
-            print(f"📊 Loaded {len(tracked_markets)} live markets")
-        markets_loaded_ts = ts
-
-    for mid, mkt in tracked_markets.items():
-        for w in sorted(rets):
-            mkt["posterior"] = bayes(mkt["posterior"], rets[w], w, mkt["correlation"])
-            mkt["updates"] += 1
-
-        ev      = ev_gap(mkt["posterior"], mkt["price"])
-        kl      = kl_div(mkt["posterior"], mkt["price"])
-        conf    = abs(mkt["posterior"] - mkt["price"])
-
-        if ev < EV_THRESH or conf < MIN_CONF: continue
-        confirms = 1 + (kl >= 0.10) + (conf >= 0.20)
-        if confirms < 2 or ts - mkt["last_signal_ts"] < COOLDOWN: continue
-
-        bet = calc_bet(signal_bankroll, mkt["posterior"], mkt["price"])
-        if bet < 0.50: continue
-
-        triggers  = "+".join(f"{w}m" for w, r in sorted(rets.items()) if abs(r) > 0.002) or "drift"
-        direction = "BUY YES 🟢" if mkt["posterior"] > mkt["price"] else "BUY NO 🔴"
-        mkt["last_signal_ts"] = ts
-        name = safe_name(mkt["name"])
-
-        trade_status = "📝 Paper"
-        won = None; pnl = 0.0
-
-        if TRADING_MODE == "paper":
-            won  = random.random() < mkt["posterior"]
-            pnl  = paper_payout(bet, mkt["price"], won)
-            signal_bankroll += pnl
-            signal_peak      = max(signal_peak, signal_bankroll)
-            if won:
-                signal_consecutive_losses = 0
-                trade_status = f"✅ WIN +${pnl:.2f}"
-            else:
-                signal_consecutive_losses += 1
-                trade_status = f"❌ LOSS -${abs(pnl):.2f}"
-            if signal_consecutive_losses >= 3:
-                signal_is_paused   = True
-                signal_pause_until = ts + 3600
-                if ADMIN_CHAT_ID:
-                    try:
-                        await application.bot.send_message(
-                            chat_id=int(ADMIN_CHAT_ID),
-                            text=f"⚠️ 3 consecutive losses — paused 1 hour.\n"
-                                 f"Bankroll: ${signal_bankroll:.2f}")
-                    except Exception: pass
-
-        elif TRADING_MODE == "live" and clob_ready and not trading_paused:
-            try:
-                raw    = await fetch_poly_markets()
-                tokens = next((rm.get("tokens", []) for rm in raw
-                    if (rm.get("id") or rm.get("condition_id", "")) == mid), None)
-                if tokens:
-                    if mkt["posterior"] > mkt["price"]:
-                        tid, tside, tp = tokens[0].get("token_id", ""), "BUY", mkt["price"]
-                    else:
-                        tid   = tokens[1].get("token_id", "") if len(tokens) > 1 else tokens[0].get("token_id", "")
-                        tside = "BUY" if len(tokens) > 1 else "SELL"
-                        tp    = 1 - mkt["price"] if len(tokens) > 1 else mkt["price"]
-                    if tid:
-                        resp = await clob_order(tid, tside, tp, bet / tp)
-                        if resp:
-                            oid          = str(resp.get("orderID", resp.get("id", "?")))[:12]
-                            trade_status = f"✅ LIVE {oid}..."
-                            rb = await clob_balance()
-                            if rb:
-                                signal_bankroll = rb
-                                signal_peak     = max(signal_peak, rb)
-                        else:
-                            trade_status = "⚠️ Order failed"
-            except Exception: pass
-
-        dd = (signal_peak - signal_bankroll) / signal_peak if signal_peak else 0
-
-        signal_trades.append({
-            "ts": ts, "market": mkt["name"], "direction": direction,
-            "posterior": mkt["posterior"], "market_price": mkt["price"],
-            "ev": ev, "bet": bet, "won": won, "pnl": pnl,
-            "bankroll_after": signal_bankroll, "triggers": triggers})
-
-        try:
-            await application.bot.send_message(
-                chat_id=int(TELEGRAM_GROUP_ID), parse_mode="Markdown",
-                text=(f"🔔 *POLYMARKET SIGNAL*\n━━━━━━━━━━━━━━━━━━━━━━\n"
-                      f"📊 *{name}*\n"
-                      f"📌 {direction}\n"
-                      f"💰 Market: {mkt['price']:.2%} → Belief: {mkt['posterior']:.2%}\n"
-                      f"📈 EV: {ev:+.2%} | Confirms: {confirms}/3\n"
-                      f"⚡ Trigger: {triggers} | BTC: ${btc:,.0f}\n"
-                      f"_Beefy quant engine • not financial advice_"))
-        except Exception as e: print(f"⚠️ Group signal: {e}")
-
-        if ADMIN_CHAT_ID:
-            try:
-                await application.bot.send_message(
-                    chat_id=int(ADMIN_CHAT_ID), parse_mode="Markdown",
-                    text=(f"🔒 *PRIVATE SIGNAL*\n━━━━━━━━━━━━━━━━━━━━━━\n"
-                          f"📊 *{name}*\n"
-                          f"📌 {direction}\n"
-                          f"💰 {mkt['price']:.2%} → {mkt['posterior']:.2%}\n"
-                          f"📈 EV: {ev:+.2%} | KL: {kl:.4f} | {confirms}/3\n"
-                          f"⚡ Trigger: {triggers}\n"
-                          f"💵 Bet: ${bet:.2f} | Bank: ${signal_bankroll:.2f}\n"
-                          f"📉 DD: {dd:.1%} | Streak: {signal_consecutive_losses}\n"
-                          f"🤖 {trade_status}"))
-            except Exception as e: print(f"⚠️ Admin DM: {e}")
-
-        print(f"📊 {mkt['name'][:30]} — {direction} — {trade_status} — ${signal_bankroll:.2f}")
-        mkt["posterior"] = 0.6 * mkt["price"] + 0.4 * mkt["posterior"]
-
-# ── Commands ─────────────────────────────────────────────────────────────────
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    keyboard = [
+        [InlineKeyboardButton("\ud83d\udc02 Bull Quote",     callback_data="bull")],
+        [InlineKeyboardButton("\ud83d\udcc8 GGB Price",      callback_data="price")],
+        [InlineKeyboardButton("\ud83c\udfa8 Wallpaper Pack", url="https://goodgreenbull.gumroad.com")],
+        [InlineKeyboardButton("\ud83d\uddbc\ufe0f NFT Drop",       callback_data="nft_info")],
+        [InlineKeyboardButton("\ud83c\udf10 Website",        url="https://goodgreenbull.com")],
+        [InlineKeyboardButton("\ud83d\udd4a\ufe0f Follow on X",    url="https://x.com/goodgreenbull")],
+    ]
     await update.message.reply_text(
-        "🐂 *Beefy Quant Engine*\n\n"
-        "/signals — Toggle scanner on/off\n"
-        "/signalstatus — Live dashboard\n"
-        "/trades — Trade history\n"
-        "/debug — Scanner internals\n"
-        "/botbalance — Wallet balance\n"
-        "/withdraw — Send USDC to personal wallet\n"
-        "/pause /resume — Trading control\n"
-        "/testconnection — API check\n"
-        "/golive — Activate live trading",
-        parse_mode="Markdown")
+        "\ud83d\udc02\ud83d\udc9a *Good Green Bull*\n\n"
+        "Built on Base. Built for builders.\n"
+        "The bull that doesn't stop.\n\n"
+        "Choose an option below \ud83d\udc47",
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+    )
 
-async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await start(update, context)
 
-async def signals_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global polymarket_enabled, tracked_markets, signal_bankroll, signal_peak
-    global signal_trades, signal_consecutive_losses, signal_is_paused, markets_loaded_ts
-    if not is_admin(update.effective_user):
-        await update.message.reply_text("⛔ Admin only."); return
-    polymarket_enabled = not polymarket_enabled
-    if polymarket_enabled:
-        tracked_markets, signal_trades = {}, []
-        signal_bankroll = signal_peak  = 50.0
-        signal_consecutive_losses      = 0
-        signal_is_paused               = False
-        markets_loaded_ts              = 0.0
-        await update.message.reply_text(
-            "📊 *Signals: ON*\n"
-            "Starting bankroll: $50.00\n"
-            "Scanning every 60s | Cooldown: 5 min\n"
-            "/signalstatus — dashboard | /trades — history",
-            parse_mode="Markdown")
-        if ADMIN_CHAT_ID and str(update.effective_chat.id) != str(ADMIN_CHAT_ID):
-            try:
-                await application.bot.send_message(
-                    chat_id=int(ADMIN_CHAT_ID),
-                    text="🔒 *Signals ON*\n$50 bankroll | 20% trail stop | 8% max | 0.25x Kelly",
-                    parse_mode="Markdown")
-            except Exception: pass
-    else:
-        n    = len(signal_trades)
-        wins = sum(1 for t in signal_trades if t.get("won"))
-        pnl  = signal_bankroll - 50.0
-        await update.message.reply_text(
-            f"📊 Signals: OFF\n"
-            f"Session: {n} trades | W:{wins} L:{n-wins} | PnL: ${pnl:+.2f}\n"
-            f"Final bankroll: ${signal_bankroll:.2f}")
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "\ud83d\udcdc *GGB Bot Commands*\n\n"
+        "/start \u2014 Open main menu\n"
+        "/price \u2014 Live $GGB price + 24h change\n"
+        "/bull \u2014 Random Beefy quote\n"
+        "/gm \u2014 Say GM to the herd\n"
+        "/leaderboard \u2014 Top GM senders today\n"
+        "/streaks \u2014 Top GM streak holders\n"
+        "/wallet `<address>` \u2014 Check GGB balance\n"
+        "/token \u2014 Token info + contract\n"
+        "/kit \u2014 GGB Builder Kit info\n"
+        "/nft \u2014 NFT drop info\n"
+        "/herd \u2014 Community stats\n"
+        "/trending \u2014 Trending tokens on Base\n"
+        "/help \u2014 Show this list\n\n"
+        "\ud83d\udc64 *Admin only:*\n"
+        "/daily \u2014 Trigger Beefy Daily push\n"
+        "/revival \u2014 Send relaunch announcement\n"
+        "/broadcast `<msg>` \u2014 Send message to group\n"
+        "/settings \u2014 Admin panel",
+        parse_mode="Markdown",
+    )
 
-async def signalstatus_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not polymarket_enabled:
-        await update.message.reply_text("📊 Signals OFF — /signals to enable"); return
-    mlines = []
-    for _, mkt in list(tracked_markets.items())[:5]:
-        d = mkt["posterior"] - mkt["price"]
-        mlines.append(
-            f"  {safe_name(mkt['name'])[:32]}\n"
-            f"    Mkt:{mkt['price']:.2%} Post:{mkt['posterior']:.2%} "
-            f"({'↑' if d>0 else '↓'}{abs(d):.2%}) upd:{mkt['updates']}")
-    mt = "\n".join(mlines) or "  Loading markets..."
-    if update.effective_chat.type == "private" and is_admin(update.effective_user):
-        n, wins = len(signal_trades), sum(1 for t in signal_trades if t.get("won"))
-        pnl = signal_bankroll - 50.0
-        dd  = (signal_peak - signal_bankroll) / signal_peak if signal_peak else 0
-        await update.message.reply_text(
-            f"🔒 *Dashboard*\n\n"
-            f"{'⏸ PAUSED' if signal_is_paused else '🟢 ACTIVE'} | "
-            f"Markets: {len(tracked_markets)}\n"
-            f"💰 ${signal_bankroll:.2f} | PnL: ${pnl:+.2f} | DD: {dd:.1%}\n"
-            f"Stop: ${signal_peak*(1-TRAIL_STOP):.2f} | "
-            f"Trades: {n} (W:{wins} L:{n-wins})\n"
-            f"Streak losses: {signal_consecutive_losses}\n\n"
-            f"{mt}", parse_mode="Markdown")
-    else:
-        await update.message.reply_text(
-            f"📊 *Scanner*\n\n"
-            f"{'⏸ PAUSED' if signal_is_paused else '🟢 ACTIVE'} | "
-            f"{len(tracked_markets)} markets\n\n{mt}",
-            parse_mode="Markdown")
 
-async def trades_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_admin(update.effective_user):
-        await update.message.reply_text("⛔ Admin only."); return
-    if not signal_trades:
-        await update.message.reply_text("📋 No trades yet this session."); return
-    recent = signal_trades[-10:]
-    lines  = [f"📋 *Last {len(recent)} Trades*\n"]
-    for t in recent:
-        icon = "✅" if t.get("won") else "❌"
-        lines.append(
-            f"{icon} {fmt_ts(t['ts'])} | {safe_name(t['market'])[:22]}\n"
-            f"   {t['direction'].split()[1]} | Bet:${t['bet']:.2f} "
-            f"PnL:{t['pnl']:+.2f} | Bank:${t['bankroll_after']:.2f}")
-    n    = len(signal_trades)
-    wins = sum(1 for t in signal_trades if t.get("won"))
-    pnl  = signal_bankroll - 50.0
-    lines.append(f"\nTotal: {n} | W:{wins} L:{n-wins} | "
-                 f"WR:{wins/max(n,1):.0%} | PnL:${pnl:+.2f}")
+async def price(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    price_val, change = await fetch_price_data()
+    if price_val is None:
+        await update.message.reply_text("\u26a0\ufe0f Could not fetch price right now. Try again shortly.")
+        return
+    await update.message.reply_text(
+        f"{format_price(price_val, change)}\n\n"
+        f"\ud83d\udcca Chart: https://tinyurl.com/GGBDex\n"
+        f"\ud83d\udcc4 Contract: `{GGB_CONTRACT}`",
+        parse_mode="Markdown",
+    )
+
+
+async def bull(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(get_bull_quote())
+
+
+async def gm_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    reset_gm_if_needed()
+    user = update.effective_user
+    name = user.first_name or "Bull"
+    if user.id not in gm_tracker:
+        gm_tracker[user.id] = {"name": name, "count": 0}
+    gm_tracker[user.id]["count"] += 1
+
+    # Update streak
+    streak = update_gm_streak(user.id, name)
+    streak_text = f"\n\ud83d\udd25 Streak: {streak} day{'s' if streak > 1 else ''}!" if streak >= 2 else ""
+
+    responses = [
+        f"GM {name} \ud83d\udc02\ud83d\udc9a Build mode is ON.{streak_text}",
+        f"GM {name} \ud83d\udc9a The herd is awake. Let's move.{streak_text}",
+        f"GM {name} \ud83d\udc02 Another day. Another rep. Lock in.{streak_text}",
+        f"GM {name} \ud83d\udc9a Still here. Still building. That's the edge.{streak_text}",
+        f"GM {name} \ud83d\udc02\ud83d\udc9a Herd strong. Ship something today.{streak_text}",
+    ]
+    await update.message.reply_text(random.choice(responses))
+
+
+async def leaderboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    reset_gm_if_needed()
+    if not gm_tracker:
+        await update.message.reply_text(
+            "No GMs logged yet today. Be the first \ud83d\udc02\ud83d\udc9a\nType /gm to get on the board."
+        )
+        return
+    sorted_users = sorted(gm_tracker.items(), key=lambda x: x[1]["count"], reverse=True)
+    medals = ["\ud83e\udd47", "\ud83e\udd48", "\ud83e\udd49"] + ["\ud83d\udc02"] * 7
+    lines = ["\ud83c\udfc6 *GM Leaderboard \u2014 Today*\n"]
+    for i, (uid, data) in enumerate(sorted_users[:10]):
+        lines.append(f"{medals[i]} {data['name']} \u2014 {data['count']} GMs")
+    lines.append("\nType /gm to get on the board \ud83d\udc9a")
     await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
 
-async def debug_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_admin(update.effective_user):
-        await update.message.reply_text("⛔ Admin only."); return
-    if not polymarket_enabled:
-        await update.message.reply_text("📊 Signals OFF."); return
-    lines = ["🔧 *Debug — Scanner State*\n"]
-    if btc_price_history:
-        lines.append(f"BTC history: {len(btc_price_history)} pts | "
-                     f"Latest: ${btc_price_history[-1][1]:,.0f}")
-    else:
-        lines.append("BTC: no data yet")
-    lines.append(f"Markets: {len(tracked_markets)}\n")
-    now = datetime.now(timezone.utc).timestamp()
-    for mid, mkt in list(tracked_markets.items())[:6]:
-        ev      = ev_gap(mkt["posterior"], mkt["price"])
-        conf    = abs(mkt["posterior"] - mkt["price"])
-        ago     = int((now - mkt["last_signal_ts"]) / 60) if mkt["last_signal_ts"] else None
-        cd_left = max(0, int((mkt["last_signal_ts"] + COOLDOWN - now) / 60)) if mkt["last_signal_ts"] else 0
-        lines.append(
-            f"  {safe_name(mkt['name'])[:30]}\n"
-            f"    Mkt:{mkt['price']:.2%} Post:{mkt['posterior']:.4f} "
-            f"EV:{ev:+.3f} Conf:{conf:.3f}\n"
-            f"    Upd:{mkt['updates']} | "
-            f"Last: {f'{ago}m ago' if ago is not None else 'never'} | "
-            f"CD:{cd_left}m")
+
+async def streaks_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show top GM streak holders."""
+    if not gm_streaks:
+        await update.message.reply_text("No streaks yet. Say /gm every day to build yours \ud83d\udd25")
+        return
+    sorted_streaks = sorted(gm_streaks.items(), key=lambda x: x[1]["current"], reverse=True)
+    medals = ["\ud83e\udd47", "\ud83e\udd48", "\ud83e\udd49"] + ["\ud83d\udd25"] * 7
+    lines = ["\ud83d\udd25 *GM Streak Leaderboard*\n"]
+    for i, (uid, data) in enumerate(sorted_streaks[:10]):
+        lines.append(f"{medals[i]} {data['name']} \u2014 {data['current']} day streak (best: {data['best']})")
+    lines.append("\nSay /gm every day to build your streak \ud83d\udc9a")
     await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
 
-async def botbalance_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_admin(update.effective_user):
-        await update.message.reply_text("⛔ Admin only."); return
-    if not POLYMARKET_PK:
-        await update.message.reply_text("⚠️ Set POLYMARKET_PRIVATE_KEY in Render."); return
-    bal = await clob_balance()
-    ws  = f"{POLYMARKET_WALLET[:6]}...{POLYMARKET_WALLET[-4:]}" if POLYMARKET_WALLET else "n/a"
+
+async def wallet(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.args:
+        await update.message.reply_text("Usage: `/wallet <Base wallet address>`", parse_mode="Markdown")
+        return
+    address = context.args[0]
+    balance = await fetch_wallet_balance(address)
+    if balance is None:
+        await update.message.reply_text("\u26a0\ufe0f Could not fetch wallet data. Check the address and try again.")
+        return
+    price_val, _ = await fetch_price_data()
+    usd_str = f"\ud83d\udcb5 \u2248 ${balance * price_val:,.2f} USD" if price_val else ""
+    short_addr = f"{address[:6]}...{address[-4:]}"
     await update.message.reply_text(
-        f"🔒 *Wallet*\n`{ws}`\n"
-        f"USDC: {'${:.2f}'.format(bal) if bal is not None else 'fetch failed'}\n"
-        f"Mode: {'LIVE' if TRADING_MODE=='live' else 'PAPER'} | "
-        f"CLOB: {'✅' if clob_ready else '❌'} | "
-        f"{'⏸' if trading_paused else '▶️'}\n"
-        f"Paper bankroll: ${signal_bankroll:.2f} (peak ${signal_peak:.2f})",
-        parse_mode="Markdown")
+        f"\ud83d\udc5b Wallet: `{short_addr}`\n"
+        f"\ud83d\udc02 GGB Balance: {balance:,.2f} GGB\n"
+        f"{usd_str}",
+        parse_mode="Markdown",
+    )
 
-async def withdraw_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_admin(update.effective_user):
-        await update.message.reply_text("⛔ Admin only."); return
-    if update.effective_chat.type != "private":
-        await update.message.reply_text("🔒 DM only."); return
-    if not POLYMARKET_PK or not PERSONAL_WALLET:
-        await update.message.reply_text("⚠️ Need POLYMARKET_PRIVATE_KEY + YOUR_PERSONAL_WALLET"); return
-    bal = await clob_balance()
-    if not bal or bal <= 0.01:
-        await update.message.reply_text(f"⚠️ No balance (${bal or 0:.2f})"); return
-    ws = f"{PERSONAL_WALLET[:6]}...{PERSONAL_WALLET[-4:]}"
-    if not context.user_data.get("withdraw_confirmed"):
-        context.user_data.update({"withdraw_confirmed": True, "withdraw_amount": bal})
-        await update.message.reply_text(
-            f"⚠️ *Confirm:* ${bal:.2f} USDC → `{ws}`\n"
-            f"/withdraw to confirm | /cancel to abort",
-            parse_mode="Markdown"); return
-    amount = context.user_data.get("withdraw_amount", bal)
-    context.user_data["withdraw_confirmed"] = False
-    await update.message.reply_text(f"📤 Sending ${amount:.2f}...")
-    ok, res = await withdraw_usdc(PERSONAL_WALLET, amount)
-    if ok:
-        await update.message.reply_text(
-            f"✅ ${amount:.2f} → `{ws}`\n"
-            f"https://polygonscan.com/tx/0x{res}", parse_mode="Markdown")
-    else:
-        await update.message.reply_text(f"❌ Failed: {res}")
 
-async def cancel_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["withdraw_confirmed"] = False
-    await update.message.reply_text("✅ Cancelled.")
-
-async def pause_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global trading_paused
-    if not is_admin(update.effective_user):
-        await update.message.reply_text("⛔ Admin only."); return
-    trading_paused = True
-    await update.message.reply_text("⏸ *Trading PAUSED* — /resume to restart", parse_mode="Markdown")
-
-async def resume_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global trading_paused
-    if not is_admin(update.effective_user):
-        await update.message.reply_text("⛔ Admin only."); return
-    trading_paused = False
+async def token(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        f"▶️ *Trading RESUMED* — {'LIVE' if TRADING_MODE=='live' else 'PAPER'} | "
-        f"CLOB: {'✅' if clob_ready else '❌'}", parse_mode="Markdown")
+        "\ud83d\udcc8 *Good Green Bull \u2014 Token Info*\n\n"
+        "Name: Good Green Bull\n"
+        "Symbol: $GGB\n"
+        "Chain: Base\n"
+        "Decimals: 18\n"
+        f"Contract: `{GGB_CONTRACT}`\n\n"
+        f"\ud83d\udd17 https://basescan.org/token/{GGB_CONTRACT}",
+        parse_mode="Markdown",
+    )
 
-async def testconn_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+async def kit(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "\ud83d\udee0\ufe0f *GGB Builder Kit*\n\n"
+        "The full content and brand system behind Good Green Bull \u2014 "
+        "packaged for builders running their own brand on Base or Farcaster.\n\n"
+        "\u2705 Content calendar + rotation framework\n"
+        "\u2705 30 social post templates \u2014 X + Farcaster\n"
+        "\u2705 10 AI image prompts with guardrails\n"
+        "\u2705 Brand voice guide\n"
+        "\u2705 Mascot design rules\n"
+        "\u2705 Monetisation framework\n"
+        "\u2705 Quick-start checklist\n\n"
+        "\ud83d\udcb0 \u00a335 \u2014 Instant download\n"
+        "\ud83d\udd17 https://goodgreenbull.gumroad.com",
+        parse_mode="Markdown",
+    )
+
+
+async def nft(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "\ud83c\udfa8 *Beefy Prime: Series One*\n\n"
+        "50 cinematic 1/1 pieces. Base chain.\n"
+        "The founding archive of Good Green Bull.\n\n"
+        "Holders receive:\n"
+        "\u2014 Exclusive founder role in this group\n"
+        "\u2014 First access to all future drops\n\n"
+        "\ud83d\udfe1 Status: Coming Soon\n"
+        "Follow @goodgreenbull on X for the mint date \ud83d\udc02\ud83d\udc9a",
+        parse_mode="Markdown",
+    )
+
+
+async def herd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    count_str = "Growing daily"
+    if TELEGRAM_GROUP_ID:
+        try:
+            count = await context.bot.get_chat_member_count(int(TELEGRAM_GROUP_ID))
+            count_str = f"{count:,} members"
+        except Exception:
+            pass
+    lines = [
+        "The herd is building. \ud83d\udc02\ud83d\udc9a",
+        "Bulls don't fold when it gets quiet. \ud83d\udc02\ud83d\udc9a",
+        "Still here. Still locked in. \ud83d\udc02\ud83d\udc9a",
+        "Early is a choice. So is being late. \ud83d\udc02\ud83d\udc9a",
+        "The quiet ones are the dangerous ones. \ud83d\udc02\ud83d\udc9a",
+    ]
+    await update.message.reply_text(
+        f"\ud83d\udc02 *The GGB Herd*\n\n"
+        f"Members: {count_str}\n"
+        f"{random.choice(lines)}\n\n"
+        f"Share the group \ud83d\udc47\nhttps://t.me/goodgreenbull",
+        parse_mode="Markdown",
+    )
+
+
+async def trending_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show trending tokens on Base chain."""
+    await update.message.reply_text("\ud83d\udd0d Scanning Base for trending tokens...")
+    tokens = await fetch_base_trending_tokens()
+    if not tokens:
+        await update.message.reply_text("No trending tokens found right now. Check back later \ud83d\udc02")
+        return
+    lines = ["\ud83d\udcc8 *Trending on Base*\n"]
+    for t in tokens:
+        change_str = f"+{t['change_24h']:.1f}%" if t['change_24h'] >= 0 else f"{t['change_24h']:.1f}%"
+        arrow = "\ud83d\udfe2" if t['change_24h'] >= 0 else "\ud83d\udd34"
+        lines.append(
+            f"{arrow} *{t['symbol']}* \u2014 ${t['price']:.6f}\n"
+            f"   Vol: ${t['volume_24h']:,.0f} | {change_str}\n"
+            f"   `{t['address'][:8]}...{t['address'][-4:]}`"
+        )
+    lines.append("\n_Always DYOR. Not financial advice._ \ud83d\udc02\ud83d\udc9a")
+    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+
+
+async def settings(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user):
-        await update.message.reply_text("⛔ Admin only."); return
-    lines = ["🔧 Connection Test\n",
-        f"{'✅' if POLYMARKET_PK else '❌'} PRIVATE_KEY",
-        f"{'✅' if POLYMARKET_WALLET else '❌'} WALLET_ADDRESS",
-        f"{'✅' if PERSONAL_WALLET else '❌'} PERSONAL_WALLET",
-        f"Mode: {TRADING_MODE} | CLOB: {'✅' if clob_ready else '❌'}"]
-    if clob_ready:
-        bal = await clob_balance()
-        lines.append(f"Balance: ${bal:.2f}" if bal else "Balance: failed")
+        await update.message.reply_text("\u26d4 Admin only.")
+        return
+    keyboard = [
+        [InlineKeyboardButton("\ud83d\udce4 Trigger Daily Post",  callback_data="trigger_daily")],
+        [InlineKeyboardButton("\ud83d\udce3 Send Revival Blast",  callback_data="send_revival")],
+        [InlineKeyboardButton("\ud83d\udcc8 Scan Base Tokens Now", callback_data="scan_tokens")],
+    ]
+    await update.message.reply_text(
+        "\u2699\ufe0f *Admin Settings*",
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+    )
+
+
+async def daily_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update.effective_user):
+        await update.message.reply_text("\u26d4 Admin only.")
+        return
+    await update.message.reply_text("\ud83d\udce4 Sending Beefy Daily now...")
+    await send_beefy_daily()
+
+
+async def revival_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update.effective_user):
+        await update.message.reply_text("\u26d4 Admin only.")
+        return
+    await update.message.reply_text("\ud83d\udce3 Sending revival blast now...")
+    await send_revival_blast()
+
+
+async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Admin only \u2014 send a custom message to the group."""
+    if not is_admin(update.effective_user):
+        await update.message.reply_text("\u26d4 Admin only.")
+        return
+    if not context.args:
+        await update.message.reply_text("Usage: `/broadcast Your message here`", parse_mode="Markdown")
+        return
+    msg = " ".join(context.args)
+    if not TELEGRAM_GROUP_ID:
+        await update.message.reply_text("\u26a0\ufe0f TELEGRAM_GROUP_ID not set.")
+        return
     try:
-        mkts = await fetch_poly_markets()
-        lines.append(f"✅ Polymarket: {len(mkts)} markets" if mkts
-                     else "⚠️ Polymarket: blocked (using seed markets)")
-    except Exception as e: lines.append(f"❌ Polymarket: {e}")
+        await application.bot.send_message(chat_id=int(TELEGRAM_GROUP_ID), text=msg)
+        await update.message.reply_text("\u2705 Broadcast sent.")
+    except Exception as e:
+        await update.message.reply_text(f"\u26a0\ufe0f Failed: {e}")
+
+# =============================================================================
+# SCHEDULED POSTS
+# =============================================================================
+
+async def send_beefy_daily():
+    """Fires every day at 08:00 UTC \u2014 themed content calendar post."""
+    if not TELEGRAM_GROUP_ID:
+        print("\u26a0\ufe0f TELEGRAM_GROUP_ID not set. Skipping.")
+        return
+
+    price_val, change = await fetch_price_data()
+    price_line = (
+        f"$GGB: ${price_val:.6f} | {'+' if change >= 0 else ''}{change:.2f}% 24h"
+        if price_val else "$GGB: Price unavailable"
+    )
+
+    # Get today's themed content
+    weekday = datetime.now(timezone.utc).weekday()
+    theme = DAILY_THEMES[weekday]
+    prompt = random.choice(theme["prompts"])
+
+    # Get rotating CTA
+    day_of_year = datetime.now(timezone.utc).timetuple().tm_yday
+    cta = rotating_ctas[day_of_year % len(rotating_ctas)]
+
+    msg = (
+        f"GM Herd \ud83d\udc02\ud83d\udc9a\n\n"
+        f"{theme['title']}\n\n"
+        f"{get_bull_quote()}\n\n"
+        f"{price_line}\n\n"
+        f"{prompt}\n\n"
+        f"{cta}"
+    )
     try:
-        p       = await fetch_btc_eth()
-        btc_usd = p.get("bitcoin", {}).get("usd", 0)
-        lines.append(f"✅ CryptoCompare: BTC ${btc_usd:,.0f}" if btc_usd > 0
-                     else "❌ Price feed failed")
-    except Exception as e: lines.append(f"❌ Price feed: {e}")
-    await update.message.reply_text("\n".join(lines))
+        await application.bot.send_message(chat_id=int(TELEGRAM_GROUP_ID), text=msg)
+        print(f"\u2705 Daily post sent: {theme['title']}")
+    except Exception as e:
+        print(f"\u26a0\ufe0f Daily post failed: {e}")
 
-async def golive_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_admin(update.effective_user):
-        await update.message.reply_text("⛔ Admin only."); return
-    if update.effective_chat.type != "private":
-        await update.message.reply_text("🔒 DM only."); return
-    if TRADING_MODE != "live":
-        await update.message.reply_text(
-            "⚠️ TRADING_MODE is 'paper'.\n"
-            "Render → Environment → TRADING_MODE=live → Redeploy → /testconnection"); return
-    if not clob_ready:
-        await update.message.reply_text("❌ CLOB not connected. /testconnection first."); return
-    bal = await clob_balance()
-    await update.message.reply_text(
-        f"🟢 *LIVE TRADING ACTIVE*\n"
-        f"Balance: ${bal:.2f} | {'▶️' if not trading_paused else '⏸'}\n"
-        f"/pause | /withdraw | /botbalance", parse_mode="Markdown")
 
-# ── Scheduled: Daily Balance DM ──────────────────────────────────────────────
-async def send_daily_balance():
-    if not ADMIN_CHAT_ID: return
-    bal  = await clob_balance() if clob_ready else None
-    pnl  = signal_bankroll - 50.0
-    dd   = (signal_peak - signal_bankroll) / signal_peak if signal_peak else 0
-    n    = len(signal_trades)
-    wins = sum(1 for t in signal_trades if t.get("won"))
+async def send_discussion_topic():
+    """Fires every day at 12:00 UTC \u2014 midday conversation starter."""
+    if not TELEGRAM_GROUP_ID:
+        return
+    day_of_year = datetime.now(timezone.utc).timetuple().tm_yday
+    topic = discussion_topics[day_of_year % len(discussion_topics)]
+    msg = f"\ud83d\udcac *Midday Discussion*\n\n{topic}"
     try:
         await application.bot.send_message(
-            chat_id=int(ADMIN_CHAT_ID), parse_mode="Markdown",
-            text=(f"📊 *Daily Report*\n"
-                  f"{'💰 $'+f'{bal:.2f}' if bal else '📝 Paper'} | "
-                  f"Bank: ${signal_bankroll:.2f} | PnL: ${pnl:+.2f}\n"
-                  f"DD: {dd:.1%} | Trades: {n} (W:{wins} L:{n-wins}) | "
-                  f"WR: {wins/max(n,1):.0%}\n"
-                  f"{'LIVE' if TRADING_MODE=='live' else 'PAPER'} | "
-                  f"{'⏸' if trading_paused else '▶️'}"))
-    except Exception as e: print(f"⚠️ Daily balance DM: {e}")
-
-# ── Scheduled: Keep-alive ping ───────────────────────────────────────────────
-async def self_ping():
-    try:
-        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=5)) as s:
-            async with s.get("https://beefy-bot.onrender.com/ping") as r:
-                await r.read()
-    except Exception: pass
-
-# ── Safe scheduler wrapper ───────────────────────────────────────────────────
-async def safe_job(coro_func, timeout=30):
-    try:
-        await asyncio.wait_for(coro_func(), timeout=timeout)
-    except asyncio.TimeoutError:
-        print(f"⚠️ Job timed out: {coro_func.__name__}")
+            chat_id=int(TELEGRAM_GROUP_ID), text=msg, parse_mode="Markdown"
+        )
     except Exception as e:
-        print(f"⚠️ Job error ({coro_func.__name__}): {e}")
+        print(f"\u26a0\ufe0f Discussion topic failed: {e}")
 
-# ── Routes ───────────────────────────────────────────────────────────────────
-@app.route("/ping", methods=["GET"])
-async def ping(): return "pong", 200
+
+async def send_weekly_engagement():
+    """Fires every Monday at 09:00 UTC."""
+    if not TELEGRAM_GROUP_ID:
+        return
+    week_num = datetime.now(timezone.utc).isocalendar()[1]
+    question = weekly_questions[week_num % len(weekly_questions)]
+    msg = (
+        f"\ud83d\udc02 *Builder Monday*\n\n"
+        f"{question}\n\n"
+        f"Best answer gets a shout from @goodgreenbull \ud83d\udc9a"
+    )
+    try:
+        await application.bot.send_message(
+            chat_id=int(TELEGRAM_GROUP_ID), text=msg, parse_mode="Markdown"
+        )
+    except Exception as e:
+        print(f"\u26a0\ufe0f Weekly post failed: {e}")
+
+
+async def send_revival_blast():
+    """One-time relaunch message. Admin-triggered."""
+    if not TELEGRAM_GROUP_ID:
+        return
+    msg = (
+        "\ud83d\udc02\ud83d\udc9a *GGB IS BACK.*\n\n"
+        "Beefy's been in build mode.\n"
+        "Now we move.\n\n"
+        "What's coming:\n"
+        "\ud83c\udfa8 Wallpaper Pack \u2014 dropping soon\n"
+        "\ud83d\uddbc\ufe0f Beefy Prime: Series One NFTs \u2014 Base chain\n"
+        "\ud83d\udee0\ufe0f GGB Builder Kit \u2014 for builders running their own brand\n\n"
+        "New content. New products. New energy.\n\n"
+        "If you're still here \u2014 you're the founding herd.\n"
+        "The ones who stayed get rewarded first.\n\n"
+        "We move. \ud83d\udc02\ud83d\udc9a\n\n"
+        "Follow: https://x.com/goodgreenbull\n"
+        "Farcaster: https://warpcast.com/goodgreenbull"
+    )
+    try:
+        await application.bot.send_message(
+            chat_id=int(TELEGRAM_GROUP_ID), text=msg, parse_mode="Markdown"
+        )
+    except Exception as e:
+        print(f"\u26a0\ufe0f Revival blast failed: {e}")
+
+
+async def scan_base_tokens():
+    """Scheduled scan \u2014 posts trending Base tokens to the group every 6 hours."""
+    if not TELEGRAM_GROUP_ID:
+        return
+
+    tokens = await fetch_base_trending_tokens()
+    if not tokens:
+        return
+
+    # Filter out already alerted tokens
+    new_tokens = [t for t in tokens if t["address"] not in alerted_tokens]
+    if not new_tokens:
+        return
+
+    lines = ["\ud83d\udcc8 *Trending on Base right now*\n"]
+    for t in new_tokens[:3]:
+        change_str = f"+{t['change_24h']:.1f}%" if t['change_24h'] >= 0 else f"{t['change_24h']:.1f}%"
+        arrow = "\ud83d\udfe2" if t['change_24h'] >= 0 else "\ud83d\udd34"
+        lines.append(
+            f"{arrow} *{t['symbol']}* \u2014 ${t['price']:.6f}\n"
+            f"   Vol: ${t['volume_24h']:,.0f} | {change_str}"
+        )
+        alerted_tokens.add(t["address"])
+    lines.append("\n_DYOR. Not financial advice._ \ud83d\udc02\ud83d\udc9a")
+
+    try:
+        await application.bot.send_message(
+            chat_id=int(TELEGRAM_GROUP_ID), text="\n".join(lines), parse_mode="Markdown"
+        )
+    except Exception as e:
+        print(f"\u26a0\ufe0f Token scan post failed: {e}")
+
+    # Keep alerted set from growing forever (clear after 200)
+    if len(alerted_tokens) > 200:
+        alerted_tokens.clear()
+
+
+async def check_milestones():
+    """Check if member count crossed a milestone. Runs every hour."""
+    global last_milestone
+    if not TELEGRAM_GROUP_ID:
+        return
+    try:
+        count = await application.bot.get_chat_member_count(int(TELEGRAM_GROUP_ID))
+        for m in MILESTONES:
+            if count >= m and last_milestone < m:
+                last_milestone = m
+                msg = (
+                    f"\ud83c\udf89\ud83d\udc02 *MILESTONE: {m} MEMBERS!*\n\n"
+                    f"The herd just hit {m}. That's {m} builders locked in.\n\n"
+                    f"We're just getting started. Share the group \ud83d\udc47\n"
+                    f"https://t.me/goodgreenbull\n\n"
+                    f"Herd strong. We move. \ud83d\udc02\ud83d\udc9a"
+                )
+                await application.bot.send_message(
+                    chat_id=int(TELEGRAM_GROUP_ID), text=msg, parse_mode="Markdown"
+                )
+                break
+    except Exception as e:
+        print(f"\u26a0\ufe0f Milestone check failed: {e}")
+
+# =============================================================================
+# MESSAGE HANDLERS
+# =============================================================================
+
+async def handle_gm_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Responds to natural GM messages in chat."""
+    if not update.message or not update.message.text:
+        return
+    text = update.message.text.strip().lower()
+    if text in ("gm", "gm!", "gm \ud83d\udc02", "gm \ud83d\udc9a", "gm \ud83d\udc02\ud83d\udc9a", "good morning"):
+        reset_gm_if_needed()
+        user = update.effective_user
+        name = user.first_name or "Bull"
+        if user.id not in gm_tracker:
+            gm_tracker[user.id] = {"name": name, "count": 0}
+        gm_tracker[user.id]["count"] += 1
+        streak = update_gm_streak(user.id, name)
+        streak_text = f" \ud83d\udd25 {streak}-day streak!" if streak >= 2 else ""
+        responses = [
+            f"GM {name} \ud83d\udc02\ud83d\udc9a{streak_text}",
+            f"GM {name} \ud83d\udc9a Lock in.{streak_text}",
+            f"GM {name} \ud83d\udc02 Build something today.{streak_text}",
+            f"GM {name} \ud83d\udc9a Herd strong.{streak_text}",
+        ]
+        await update.message.reply_text(random.choice(responses))
+
+
+async def handle_reactive_replies(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """React to keywords in group chat with brand-voice replies."""
+    if not update.message or not update.message.text:
+        return
+    text = update.message.text.strip().lower()
+
+    # Don't reply to every message \u2014 only trigger on short messages
+    if len(text) > 100:
+        return
+
+    # Don't reply to commands
+    if text.startswith("/"):
+        return
+
+    # Check for keyword matches (only reply ~30% of the time to avoid spam)
+    for keyword, replies in REACTIVE_REPLIES.items():
+        if keyword in text.split():  # Match whole words only
+            if random.random() < 0.30:  # 30% reply rate
+                await update.message.reply_text(random.choice(replies))
+            return  # Only match one keyword per message
+
+
+async def welcome_new_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Fires when a new member joins the group."""
+    result = update.chat_member
+    if not result:
+        return
+    old_status = result.old_chat_member.status
+    new_status = result.new_chat_member.status
+    if old_status in (ChatMember.LEFT, ChatMember.BANNED) and new_status == ChatMember.MEMBER:
+        name = result.new_chat_member.user.first_name or "Bull"
+        await context.bot.send_message(
+            chat_id=result.chat.id,
+            text=(
+                f"\ud83d\udc02\ud83d\udc9a Welcome to the herd, {name}!\n\n"
+                f"Good Green Bull is a digital brand and builder community on Base.\n\n"
+                f"Start here:\n"
+                f"\ud83d\udcc8 /price \u2014 Live $GGB price\n"
+                f"\ud83d\udc02 /bull \u2014 Get a Beefy quote\n"
+                f"\ud83d\udc4b /gm \u2014 Say GM to the herd\n"
+                f"\ud83d\udee0\ufe0f /kit \u2014 GGB Builder Kit\n"
+                f"\ud83c\udfa8 /nft \u2014 Upcoming NFT drop\n\n"
+                f"Follow us on X \ud83d\udc49 https://x.com/goodgreenbull\n\n"
+                f"Herd strong. We move. \ud83d\udc02\ud83d\udc9a"
+            ),
+        )
+
+
+async def detect_spam(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Mutes users sending more than 5 messages in 10 seconds."""
+    if not update.message or not update.effective_user:
+        return
+    user_id = update.effective_user.id
+    chat_id = update.effective_chat.id
+    now = datetime.now(timezone.utc)
+    window = timedelta(seconds=10)
+    timestamps = user_spam_tracker.get(user_id, [])
+    timestamps = [t for t in timestamps if now - t < window]
+    timestamps.append(now)
+    user_spam_tracker[user_id] = timestamps
+    if len(timestamps) > 5:
+        try:
+            await context.bot.restrict_chat_member(
+                chat_id, user_id,
+                permissions=ChatPermissions(can_send_messages=False),
+                until_date=now + timedelta(minutes=10),
+            )
+            await context.bot.send_message(chat_id, text="\u26a0\ufe0f User muted 10 mins for spam.")
+        except Exception:
+            pass
+
+# =============================================================================
+# CALLBACK HANDLER
+# =============================================================================
+
+async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    if query.data == "bull":
+        await query.edit_message_text(get_bull_quote())
+    elif query.data == "price":
+        price_val, change = await fetch_price_data()
+        if price_val is None:
+            await query.edit_message_text("\u26a0\ufe0f Could not fetch price right now.")
+            return
+        await query.edit_message_text(
+            f"{format_price(price_val, change)}\n\n\ud83d\udcca https://tinyurl.com/GGBDex"
+        )
+    elif query.data == "nft_info":
+        await query.edit_message_text(
+            "\ud83c\udfa8 Beefy Prime: Series One\n\n"
+            "50 cinematic 1/1 pieces. Base chain.\n"
+            "Status: Coming Soon \ud83d\udfe1\n\n"
+            "Follow @goodgreenbull on X for the mint date \ud83d\udc02\ud83d\udc9a"
+        )
+    elif query.data == "trigger_daily":
+        await query.edit_message_text("\ud83d\udce4 Sending daily post...")
+        await send_beefy_daily()
+    elif query.data == "send_revival":
+        await query.edit_message_text("\ud83d\udce3 Sending revival blast...")
+        await send_revival_blast()
+    elif query.data == "scan_tokens":
+        await query.edit_message_text("\ud83d\udd0d Scanning Base tokens...")
+        await scan_base_tokens()
+
+# =============================================================================
+# WEBHOOK ROUTES
+# =============================================================================
 
 @app.route("/", methods=["GET"])
-async def home(): return "🐂 Beefy Quant Engine — Running"
+async def home():
+    return "\ud83d\udc02 Beefy Bot v2 \u2014 GGB Brand Engine. Built on Base."
+
 
 @app.route(WEBHOOK_PATH, methods=["POST"])
 async def webhook():
-    data   = await request.get_json(force=True)
+    data = await request.get_json(force=True)
     update = Update.de_json(data, application.bot)
     await application.process_update(update)
     return "OK"
 
-# ── Startup ──────────────────────────────────────────────────────────────────
-def register_handlers():
-    h = application.add_handler
-    h(CommandHandler("start",          start))
-    h(CommandHandler("help",           help_cmd))
-    h(CommandHandler("signals",        signals_cmd))
-    h(CommandHandler("signalstatus",   signalstatus_cmd))
-    h(CommandHandler("trades",         trades_cmd))
-    h(CommandHandler("debug",          debug_cmd))
-    h(CommandHandler("botbalance",     botbalance_cmd))
-    h(CommandHandler("withdraw",       withdraw_cmd))
-    h(CommandHandler("cancel",         cancel_cmd))
-    h(CommandHandler("pause",          pause_cmd))
-    h(CommandHandler("resume",         resume_cmd))
-    h(CommandHandler("testconnection", testconn_cmd))
-    h(CommandHandler("golive",         golive_cmd))
+# =============================================================================
+# HANDLER REGISTRATION
+# =============================================================================
 
-@app.before_serving
-async def startup():
-    register_handlers()
+def register_handlers():
+    application.add_handler(CommandHandler("start",       start))
+    application.add_handler(CommandHandler("help",        help_command))
+    application.add_handler(CommandHandler("price",       price))
+    application.add_handler(CommandHandler("bull",        bull))
+    application.add_handler(CommandHandler("gm",          gm_command))
+    application.add_handler(CommandHandler("leaderboard", leaderboard))
+    application.add_handler(CommandHandler("streaks",     streaks_command))
+    application.add_handler(CommandHandler("wallet",      wallet))
+    application.add_handler(CommandHandler("token",       token))
+    application.add_handler(CommandHandler("kit",         kit))
+    application.add_handler(CommandHandler("nft",         nft))
+    application.add_handler(CommandHandler("herd",        herd))
+    application.add_handler(CommandHandler("trending",    trending_command))
+    application.add_handler(CommandHandler("daily",       daily_command))
+    application.add_handler(CommandHandler("revival",     revival_command))
+    application.add_handler(CommandHandler("broadcast",   broadcast_command))
+    application.add_handler(CommandHandler("settings",    settings))
+    application.add_handler(CallbackQueryHandler(button))
+    application.add_handler(ChatMemberHandler(welcome_new_member, ChatMemberHandler.CHAT_MEMBER))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_gm_text), group=1)
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_reactive_replies), group=2)
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, detect_spam), group=3)
+
+# =============================================================================
+# STARTUP
+# =============================================================================
+
+async def on_startup():
     await application.initialize()
     await application.bot.set_webhook(url=WEBHOOK_URL)
-    print(f"✅ Webhook: {WEBHOOK_URL}")
-    await init_clob()
+    print(f"\u2705 Webhook set: {WEBHOOK_URL}")
+
     scheduler = AsyncIOScheduler(timezone="UTC")
-    scheduler.add_job(safe_job, "interval", seconds=60,  args=[run_signal_scan,    30])
-    scheduler.add_job(safe_job, "cron", hour=8, minute=5, args=[send_daily_balance, 15])
-    scheduler.add_job(safe_job, "interval", minutes=10,  args=[self_ping,          10])
+    scheduler.add_job(send_beefy_daily,       "cron", hour=8, minute=0)
+    scheduler.add_job(send_discussion_topic,  "cron", hour=12, minute=0)
+    scheduler.add_job(send_weekly_engagement, "cron", day_of_week="mon", hour=9, minute=0)
+    scheduler.add_job(scan_base_tokens,       "interval", hours=6)
+    scheduler.add_job(check_milestones,       "interval", hours=1)
     scheduler.start()
-    print("✅ Scheduler: signals 60s | balance 08:05 UTC | ping 10m")
-    print(f"📋 Mode: {TRADING_MODE} | CLOB: {'ready' if clob_ready else 'paper only'}")
+    print("\u2705 Scheduler: Daily 08:00 | Discussion 12:00 | Monday 09:00 | Token scan 6h | Milestones 1h")
+    print("\ud83d\udc02 Beefy Bot v2 \u2014 Brand Engine \u2014 LIVE")
+
+
+if __name__ == "__main__":
+    register_handlers()
+    loop = asyncio.get_event_loop()
+    loop.run_until_complete(on_startup())
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
