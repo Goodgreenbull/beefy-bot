@@ -57,161 +57,160 @@ alerted_tokens      = set()  # Token addresses already alerted (prevent spam)
 # =============================================================================
 
 bull_quotes = [
-    "The market rewards patience. The builder rewards himself. \ud83d\udc02\ud83d\udc9a",
-    "Quiet stretches separate the builders from the tourists. \ud83d\udc02\ud83d\udc9a",
-    "Ship ugly. Fix fast. Ship again. \ud83d\udee0\ufe0f\ud83d\udc9a",
-    "Nobody's watching the process. That's the point. \ud83d\udc02\ud83c\udf3f",
-    "The signal is quiet. Keep going anyway. \ud83d\udc02\ud83d\udc9a",
-    "You don't outwork the market. You outlast it. \ud83d\udc02\ud83d\udc9a",
-    "Conviction is a practice, not a feeling. \ud83d\udc9a\ud83d\udc02",
-    "Most quit before the compound kicks in. \ud83d\udc02\ud83d\udc9a",
-    "Build mode doesn't need an announcement. \ud83d\udee0\ufe0f\ud83d\udc02",
-    "Progress doesn't ask for permission. \ud83d\udc9a\ud83d\udc02",
-    "The ones still building in the noise are the ones worth watching. \ud83d\udc02\ud83d\udc9a",
-    "Hold the line. The line is the work. \ud83d\udc02\ud83d\udc9a",
-    "Momentum is just small moves that didn't stop. \ud83d\udcc8\ud83d\udc02",
-    "No one remembers the hype. Everyone remembers what lasted. \ud83d\udc02\ud83d\udc9a",
-    "Ship because it sharpens you, not because it trends. \ud83d\udee0\ufe0f\ud83d\udc9a",
-    "If you're still here, you already passed the first filter. \ud83d\udc02\ud83d\udc9a",
-    "Systems beat sprints every time. \ud83d\udcc8\ud83d\udc02",
-    "Build for the version of yourself that's still here in two years. \ud83d\udc02\ud83d\udc9a",
-    "The grind is not the goal. The grind is the gate. \ud83d\udc9a\ud83d\udc02",
-    "Locked in. Herd strong. We move. \ud83d\udc02\ud83d\udc9a",
+    "The market rewards patience. The builder rewards himself. 🐂💚",
+    "Quiet stretches separate the builders from the tourists. 🐂💚",
+    "Ship ugly. Fix fast. Ship again. 🛠️💚",
+    "Nobody's watching the process. That's the point. 🐂🌿",
+    "The signal is quiet. Keep going anyway. 🐂💚",
+    "You don't outwork the market. You outlast it. 🐂💚",
+    "Conviction is a practice, not a feeling. 💚🐂",
+    "Most quit before the compound kicks in. 🐂💚",
+    "Build mode doesn't need an announcement. 🛠️🐂",
+    "Progress doesn't ask for permission. 💚🐂",
+    "The ones still building in the noise are the ones worth watching. 🐂💚",
+    "Hold the line. The line is the work. 🐂💚",
+    "Momentum is just small moves that didn't stop. 📈🐂",
+    "No one remembers the hype. Everyone remembers what lasted. 🐂💚",
+    "Ship because it sharpens you, not because it trends. 🛠️💚",
+    "If you're still here, you already passed the first filter. 🐂💚",
+    "Systems beat sprints every time. 📈🐂",
+    "Build for the version of yourself that's still here in two years. 🐂💚",
+    "The grind is not the goal. The grind is the gate. 💚🐂",
+    "Locked in. Herd strong. We move. 🐂💚",
 ]
 
 # =============================================================================
 # CONTENT CALENDAR — Daily themed posts
 # =============================================================================
 
-# 0=Monday, 1=Tuesday, ... 6=Sunday
 DAILY_THEMES = {
     0: {
-        "title": "\ud83d\udcaa Motivation Monday",
+        "title": "💪 Motivation Monday",
         "prompts": [
-            "New week. New reps. What's the one thing you're locking in this week? \ud83d\udc47",
-            "Monday energy: name one thing you're shipping before Friday \ud83d\udee0\ufe0f",
-            "The week belongs to the ones who start. What's your first move? \ud83d\udc02",
-            "Most people plan on Monday and quit by Wednesday. Not this herd. What's yours? \ud83d\udc9a",
-            "Momentum starts now. What are you building this week? \ud83d\udc47",
+            "New week. New reps. What's the one thing you're locking in this week? 👇",
+            "Monday energy: name one thing you're shipping before Friday 🛠️",
+            "The week belongs to the ones who start. What's your first move? 🐂",
+            "Most people plan on Monday and quit by Wednesday. Not this herd. What's yours? 💚",
+            "Momentum starts now. What are you building this week? 👇",
         ],
     },
     1: {
-        "title": "\ud83e\udde0 Alpha Tuesday",
+        "title": "🧠 Alpha Tuesday",
         "prompts": [
-            "Drop one thing you learned recently that changed how you think \ud83d\udc47",
-            "Best thread, podcast, or article you consumed this week? Share it \ud83e\udde0",
-            "What's one alpha that most people are sleeping on right now? \ud83d\udc47",
-            "Share a tool, strategy, or insight that levelled you up recently \ud83d\udc9a",
-            "What's something you know now that you wish you knew 6 months ago? \ud83d\udc47",
+            "Drop one thing you learned recently that changed how you think 👇",
+            "Best thread, podcast, or article you consumed this week? Share it 🧠",
+            "What's one alpha that most people are sleeping on right now? 👇",
+            "Share a tool, strategy, or insight that levelled you up recently 💚",
+            "What's something you know now that you wish you knew 6 months ago? 👇",
         ],
     },
     2: {
-        "title": "\ud83d\udee0\ufe0f Builder Wednesday",
+        "title": "🛠️ Builder Wednesday",
         "prompts": [
-            "Midweek check: what have you shipped so far this week? \ud83d\udc47",
-            "Show your work. Screenshot, link, or progress update \u2014 drop it \ud83d\udee0\ufe0f",
-            "Builder Wednesday: what's the hardest part of what you're building right now? \ud83d\udc47",
-            "What's one thing on your build list that keeps getting pushed back? \ud83d\udc02",
-            "Share what you're working on. No pitch, just progress \ud83d\udc9a",
+            "Midweek check: what have you shipped so far this week? 👇",
+            "Show your work. Screenshot, link, or progress update — drop it 🛠️",
+            "Builder Wednesday: what's the hardest part of what you're building right now? 👇",
+            "What's one thing on your build list that keeps getting pushed back? 🐂",
+            "Share what you're working on. No pitch, just progress 💚",
         ],
     },
     3: {
-        "title": "\ud83d\udcc8 Base Thursday",
+        "title": "📈 Base Thursday",
         "prompts": [
-            "What's the most interesting project you've seen on Base lately? \ud83d\udc47",
-            "Base ecosystem check: what token or dApp caught your eye this week? \ud83d\udcc8",
-            "If you could only hold 3 Base projects long term \u2014 what makes the cut? \ud83d\udc02",
-            "What does Base need more of right now? Builders, speak up \ud83d\udc47",
-            "Drop a Base project that deserves more attention \ud83d\udc9a",
+            "What's the most interesting project you've seen on Base lately? 👇",
+            "Base ecosystem check: what token or dApp caught your eye this week? 📈",
+            "If you could only hold 3 Base projects long term — what makes the cut? 🐂",
+            "What does Base need more of right now? Builders, speak up 👇",
+            "Drop a Base project that deserves more attention 💚",
         ],
     },
     4: {
-        "title": "\ud83d\udd25 Flex Friday",
+        "title": "🔥 Flex Friday",
         "prompts": [
-            "It's Friday. What's your W this week? Big or small, drop it \ud83d\udc47 \ud83d\udd25",
-            "Flex Friday: what did you accomplish that you're proud of? \ud83d\udc9a",
-            "End the week strong. What's one thing that went right? \ud83d\udc02",
-            "Friday flex: show a win, a ship, or a lesson from this week \ud83d\udc47",
-            "The weekend is earned. What did you build to deserve yours? \ud83d\udd25",
+            "It's Friday. What's your W this week? Big or small, drop it 👇 🔥",
+            "Flex Friday: what did you accomplish that you're proud of? 💚",
+            "End the week strong. What's one thing that went right? 🐂",
+            "Friday flex: show a win, a ship, or a lesson from this week 👇",
+            "The weekend is earned. What did you build to deserve yours? 🔥",
         ],
     },
     5: {
-        "title": "\ud83c\udf3f Chill Saturday",
+        "title": "🌿 Chill Saturday",
         "prompts": [
-            "Saturday vibes. What are you recharging with today? \ud83c\udf3f",
-            "Builders need rest too. What's your go-to way to switch off? \ud83d\udc47",
-            "Weekend mode. Reading, gaming, touching grass \u2014 what's the move? \ud83d\udc02\ud83d\udc9a",
-            "No hustle today. Just vibes. What's good in your world? \ud83c\udf3f",
-            "Saturday reset. What are you grateful for this week? \ud83d\udc9a",
+            "Saturday vibes. What are you recharging with today? 🌿",
+            "Builders need rest too. What's your go-to way to switch off? 👇",
+            "Weekend mode. Reading, gaming, touching grass — what's the move? 🐂💚",
+            "No hustle today. Just vibes. What's good in your world? 🌿",
+            "Saturday reset. What are you grateful for this week? 💚",
         ],
     },
     6: {
-        "title": "\ud83d\udccb Sunday Reset",
+        "title": "📋 Sunday Reset",
         "prompts": [
-            "Sunday planning: what's the #1 priority for next week? \ud83d\udc47",
-            "Reset day. What are you carrying forward and what are you dropping? \ud83d\udc02",
-            "Sunday question: what would make next week a 10/10? \ud83d\udc9a",
-            "End of week. Rate your week 1-10 and tell us why \ud83d\udc47",
-            "Tomorrow starts a new cycle. What's the play? \ud83d\udccb",
+            "Sunday planning: what's the #1 priority for next week? 👇",
+            "Reset day. What are you carrying forward and what are you dropping? 🐂",
+            "Sunday question: what would make next week a 10/10? 💚",
+            "End of week. Rate your week 1-10 and tell us why 👇",
+            "Tomorrow starts a new cycle. What's the play? 📋",
         ],
     },
 }
 
 # =============================================================================
-# WEEKLY ENGAGEMENT QUESTIONS — Rotates by week number
+# WEEKLY ENGAGEMENT QUESTIONS
 # =============================================================================
 
 weekly_questions = [
-    "What's the one thing you're shipping this week? Drop it below \ud83d\udee0\ufe0f",
-    "Best Base project you've used this week? Go \ud83d\udc47",
-    "If you had to cut everything except one project \u2014 what stays? \ud83d\udc02",
-    "What's one tool (AI or otherwise) that's genuinely changed how you build? \ud83d\udc47",
-    "Biggest lesson from your last build? Keep it real \ud83d\udc47",
-    "What would make you check this group every single day? Tell us \ud83d\udc02\ud83d\udc9a",
-    "One word that describes your build mindset this week \ud83d\udc47",
-    "What's the most underrated thing happening on Base right now? \ud83d\udc02",
-    "If GGB dropped a product tomorrow \u2014 what would you want it to be? \ud83d\udc47",
-    "What does winning look like for you in the next 90 days? \ud83d\udc02\ud83d\udc9a",
+    "What's the one thing you're shipping this week? Drop it below 🛠️",
+    "Best Base project you've used this week? Go 👇",
+    "If you had to cut everything except one project — what stays? 🐂",
+    "What's one tool (AI or otherwise) that's genuinely changed how you build? 👇",
+    "Biggest lesson from your last build? Keep it real 👇",
+    "What would make you check this group every single day? Tell us 🐂💚",
+    "One word that describes your build mindset this week 👇",
+    "What's the most underrated thing happening on Base right now? 🐂",
+    "If GGB dropped a product tomorrow — what would you want it to be? 👇",
+    "What does winning look like for you in the next 90 days? 🐂💚",
 ]
 
 # =============================================================================
-# DISCUSSION TOPICS — Extra daily conversation starters (posted at 12:00 UTC)
+# DISCUSSION TOPICS — Posted at 12:00 UTC
 # =============================================================================
 
 discussion_topics = [
-    "Hot take time: what's one popular crypto opinion you disagree with? \ud83d\udd25",
-    "If you had $100 to put into one Base token today \u2014 where's it going? \ud83d\udc47",
-    "Builders vs traders \u2014 which one are you and why? \ud83d\udc02",
-    "What's the biggest mistake you've made in crypto? No judgment \ud83d\udc9a",
-    "AI + crypto \u2014 overrated, underrated, or perfectly rated? \ud83e\udde0",
-    "Name a project that died but had a great idea worth reviving \ud83d\udc47",
-    "What separates a good community from a dead one? Real answers only \ud83d\udc02",
-    "If you could mass-adopt ONE thing about Web3 \u2014 what would it be? \ud83d\udc9a",
-    "Unpopular opinion: memecoins are ______ . Fill in the blank \ud83d\udc47",
-    "Best trade you ever made? Worst? Drop both \ud83d\udcc8\ud83d\udcc9",
-    "What would you build if money and time weren't a factor? \ud83d\udee0\ufe0f",
-    "Is on-chain reputation the next big thing or just hype? \ud83e\udde0",
-    "DeFi, NFTs, or social \u2014 what's the next big wave? \ud83d\udc47",
-    "What's one thing the crypto space needs to stop doing? \ud83d\udd25",
-    "If you had to explain Base to your nan \u2014 how would you do it? \ud83d\udc02\ud83d\udc9a",
-    "What's your daily crypto routine? Walk us through it \ud83d\udc47",
-    "One year from now \u2014 where do you see yourself? Be specific \ud83d\udc9a",
-    "What project outside of crypto inspires how you build? \ud83d\udee0\ufe0f",
-    "Would you rather have 10k followers or 100 paying customers? \ud83d\udc47",
-    "What's the most underrated skill in crypto right now? \ud83e\udde0",
+    "Hot take time: what's one popular crypto opinion you disagree with? 🔥",
+    "If you had $100 to put into one Base token today — where's it going? 👇",
+    "Builders vs traders — which one are you and why? 🐂",
+    "What's the biggest mistake you've made in crypto? No judgment 💚",
+    "AI + crypto — overrated, underrated, or perfectly rated? 🧠",
+    "Name a project that died but had a great idea worth reviving 👇",
+    "What separates a good community from a dead one? Real answers only 🐂",
+    "If you could mass-adopt ONE thing about Web3 — what would it be? 💚",
+    "Unpopular opinion: memecoins are ______ . Fill in the blank 👇",
+    "Best trade you ever made? Worst? Drop both 📈📉",
+    "What would you build if money and time weren't a factor? 🛠️",
+    "Is on-chain reputation the next big thing or just hype? 🧠",
+    "DeFi, NFTs, or social — what's the next big wave? 👇",
+    "What's one thing the crypto space needs to stop doing? 🔥",
+    "If you had to explain Base to your nan — how would you do it? 🐂💚",
+    "What's your daily crypto routine? Walk us through it 👇",
+    "One year from now — where do you see yourself? Be specific 💚",
+    "What project outside of crypto inspires how you build? 🛠️",
+    "Would you rather have 10k followers or 100 paying customers? 👇",
+    "What's the most underrated skill in crypto right now? 🧠",
 ]
 
 # =============================================================================
-# ROTATING CTAs — Product/brand pushes (attached to daily post)
+# ROTATING CTAs
 # =============================================================================
 
 rotating_ctas = [
-    "\ud83d\udee0\ufe0f Build your own brand on Base \u2192 https://goodgreenbull.gumroad.com",
-    "\ud83c\udfa8 Beefy Prime NFTs dropping soon \u2014 follow @goodgreenbull on X for the date \ud83d\udc02",
-    "\ud83c\udf10 goodgreenbull.com \u2014 the home of the herd \ud83d\udc9a",
-    "\ud83d\udd4a\ufe0f Follow the bull on X \u2192 https://x.com/goodgreenbull",
-    "\ud83d\udce3 Share this group with a builder \u2192 https://t.me/goodgreenbull",
-    "\ud83d\udee0\ufe0f GGB Builder Kit \u2014 templates, prompts, brand system \u2192 https://goodgreenbull.gumroad.com",
+    "🛠️ Build your own brand on Base → https://goodgreenbull.gumroad.com",
+    "🎨 Beefy Prime NFTs dropping soon — follow @goodgreenbull on X for the date 🐂",
+    "🌐 goodgreenbull.com — the home of the herd 💚",
+    "🕊️ Follow the bull on X → https://x.com/goodgreenbull",
+    "📣 Share this group with a builder → https://t.me/goodgreenbull",
+    "🛠️ GGB Builder Kit — templates, prompts, brand system → https://goodgreenbull.gumroad.com",
 ]
 
 # =============================================================================
@@ -226,46 +225,46 @@ MILESTONES = [25, 50, 75, 100, 150, 200, 250, 500, 750, 1000, 2500, 5000, 10000]
 
 REACTIVE_REPLIES = {
     "base": [
-        "Base is the move. \ud83d\udc02\ud83d\udc9a",
-        "Building on Base hits different. \ud83d\udc9a",
-        "Base chain, best chain. \ud83d\udee0\ufe0f\ud83d\udc02",
+        "Base is the move. 🐂💚",
+        "Building on Base hits different. 💚",
+        "Base chain, best chain. 🛠️🐂",
     ],
     "token": [
-        "Tokens come and go. Builders stay. \ud83d\udc02",
-        "Always DYOR. The herd is smart. \ud83d\udc9a",
-        "What token's got your attention? \ud83d\udc47",
+        "Tokens come and go. Builders stay. 🐂",
+        "Always DYOR. The herd is smart. 💚",
+        "What token's got your attention? 👇",
     ],
     "build": [
-        "Builder energy detected. \ud83d\udee0\ufe0f\ud83d\udc9a",
-        "Ship it. Fix it. Ship again. \ud83d\udc02",
-        "That's the builder mindset. Lock in. \ud83d\udc9a",
+        "Builder energy detected. 🛠️💚",
+        "Ship it. Fix it. Ship again. 🐂",
+        "That's the builder mindset. Lock in. 💚",
     ],
     "ship": [
-        "Ship > talk. Always. \ud83d\udee0\ufe0f\ud83d\udc02",
-        "Shipped? Respect. \ud83d\udc9a",
-        "The ones who ship are the ones who win. \ud83d\udc02",
+        "Ship > talk. Always. 🛠️🐂",
+        "Shipped? Respect. 💚",
+        "The ones who ship are the ones who win. 🐂",
     ],
     "ggb": [
-        "GGB \ud83d\udc02\ud83d\udc9a Herd strong.",
-        "Good Green Bull. Built to last. \ud83d\udc9a",
-        "The bull that doesn't stop. \ud83d\udc02\ud83d\udc9a",
+        "GGB 🐂💚 Herd strong.",
+        "Good Green Bull. Built to last. 💚",
+        "The bull that doesn't stop. 🐂💚",
     ],
     "bull": [
-        "Bull mode activated. \ud83d\udc02\ud83d\udc9a",
-        "The herd stays bullish. \ud83d\udc9a",
-        "Beefy approves. \ud83d\udc02",
+        "Bull mode activated. 🐂💚",
+        "The herd stays bullish. 💚",
+        "Beefy approves. 🐂",
     ],
     "wagmi": [
-        "WAGMI \u2014 but only if you keep building. \ud83d\udc02\ud83d\udc9a",
-        "WAGMI. Herd strong. \ud83d\udc9a",
+        "WAGMI — but only if you keep building. 🐂💚",
+        "WAGMI. Herd strong. 💚",
     ],
     "ngmi": [
-        "Not with that attitude. Lock in. \ud83d\udc02",
-        "Nah, we don't do that here. WAGMI. \ud83d\udc9a",
+        "Not with that attitude. Lock in. 🐂",
+        "Nah, we don't do that here. WAGMI. 💚",
     ],
     "gn": [
-        "GN bull. Rest up, we build tomorrow. \ud83d\udc02\ud83d\udc9a",
-        "GN \ud83d\udc9a See you at the next GM.",
+        "GN bull. Rest up, we build tomorrow. 🐂💚",
+        "GN 💚 See you at the next GM.",
     ],
 }
 
@@ -287,7 +286,6 @@ def get_bull_quote() -> str:
 
 
 async def fetch_price_data():
-    """Fetch GGB price from DexScreener."""
     url = f"https://api.dexscreener.com/latest/dex/tokens/{GGB_CONTRACT}"
     try:
         async with aiohttp.ClientSession() as session:
@@ -302,7 +300,6 @@ async def fetch_price_data():
 
 
 async def fetch_wallet_balance(address: str):
-    """Fetch GGB token balance for a wallet."""
     url = (
         f"https://api.basescan.org/api?module=account&action=tokenbalance"
         f"&contractaddress={GGB_CONTRACT}&address={address}"
@@ -320,23 +317,15 @@ async def fetch_wallet_balance(address: str):
 
 
 async def fetch_base_trending_tokens():
-    """
-    Fetch trending/new tokens on Base from DexScreener.
-    Returns list of token dicts with name, symbol, price, change, volume, address.
-    """
     try:
         async with aiohttp.ClientSession() as session:
-            # Get latest token profiles
             async with session.get(
                 "https://api.dexscreener.com/token-profiles/latest/v1",
                 timeout=aiohttp.ClientTimeout(total=10),
             ) as resp:
                 profiles = await resp.json()
 
-            # Filter for Base chain tokens
             base_tokens = [p for p in profiles if p.get("chainId") == "base"][:20]
-
-            # Get price data for each
             trending = []
             for token in base_tokens[:10]:
                 addr = token.get("tokenAddress", "")
@@ -355,7 +344,6 @@ async def fetch_base_trending_tokens():
                         vol = float(pair.get("volume", {}).get("h24", 0))
                         change = float(pair.get("priceChange", {}).get("h24", 0))
                         liquidity = float(pair.get("liquidity", {}).get("usd", 0))
-                        # Only alert on tokens with real activity
                         if vol >= 10000 and liquidity >= 5000:
                             trending.append({
                                 "name": pair.get("baseToken", {}).get("name", "Unknown"),
@@ -370,16 +358,14 @@ async def fetch_base_trending_tokens():
                 except Exception:
                     continue
 
-            # Sort by volume
             trending.sort(key=lambda x: x["volume_24h"], reverse=True)
             return trending[:5]
     except Exception as e:
-        print(f"\u26a0\ufe0f Base token scan failed: {e}")
+        print(f"⚠️ Base token scan failed: {e}")
         return []
 
 
 def is_admin(user) -> bool:
-    """Check if user is admin \u2014 by chat ID first, then username."""
     if ADMIN_CHAT_ID and str(user.id) == str(ADMIN_CHAT_ID):
         return True
     return user.username == ADMIN_USERNAME.lstrip("@")
@@ -387,8 +373,8 @@ def is_admin(user) -> bool:
 
 def format_price(price_val: float, change: float) -> str:
     change_str = f"+{change:.2f}%" if change >= 0 else f"{change:.2f}%"
-    arrow = "\ud83d\udcc8" if change >= 0 else "\ud83d\udcc9"
-    return f"\ud83d\udcb5 GGB: ${price_val:.6f}\n{arrow} 24h: {change_str}"
+    arrow = "📈" if change >= 0 else "📉"
+    return f"💵 GGB: ${price_val:.6f}\n{arrow} 24h: {change_str}"
 
 
 def reset_gm_if_needed():
@@ -400,23 +386,18 @@ def reset_gm_if_needed():
 
 
 def update_gm_streak(user_id, name):
-    """Track consecutive GM days for a user."""
     today = datetime.now(timezone.utc).date()
     if user_id not in gm_streaks:
         gm_streaks[user_id] = {"name": name, "current": 1, "best": 1, "last_date": today}
         return 1
-
     streak = gm_streaks[user_id]
     streak["name"] = name
-
     if streak["last_date"] == today:
-        return streak["current"]  # Already counted today
-
+        return streak["current"]
     if streak["last_date"] == today - timedelta(days=1):
-        streak["current"] += 1  # Consecutive day
+        streak["current"] += 1
     else:
-        streak["current"] = 1   # Streak broken
-
+        streak["current"] = 1
     streak["best"] = max(streak["best"], streak["current"])
     streak["last_date"] = today
     return streak["current"]
@@ -427,18 +408,18 @@ def update_gm_streak(user_id, name):
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [
-        [InlineKeyboardButton("\ud83d\udc02 Bull Quote",     callback_data="bull")],
-        [InlineKeyboardButton("\ud83d\udcc8 GGB Price",      callback_data="price")],
-        [InlineKeyboardButton("\ud83c\udfa8 Wallpaper Pack", url="https://goodgreenbull.gumroad.com")],
-        [InlineKeyboardButton("\ud83d\uddbc\ufe0f NFT Drop",       callback_data="nft_info")],
-        [InlineKeyboardButton("\ud83c\udf10 Website",        url="https://goodgreenbull.com")],
-        [InlineKeyboardButton("\ud83d\udd4a\ufe0f Follow on X",    url="https://x.com/goodgreenbull")],
+        [InlineKeyboardButton("🐂 Bull Quote",     callback_data="bull")],
+        [InlineKeyboardButton("📈 GGB Price",      callback_data="price")],
+        [InlineKeyboardButton("🎨 Wallpaper Pack", url="https://goodgreenbull.gumroad.com")],
+        [InlineKeyboardButton("🖼️ NFT Drop",       callback_data="nft_info")],
+        [InlineKeyboardButton("🌐 Website",        url="https://goodgreenbull.com")],
+        [InlineKeyboardButton("🕊️ Follow on X",    url="https://x.com/goodgreenbull")],
     ]
     await update.message.reply_text(
-        "\ud83d\udc02\ud83d\udc9a *Good Green Bull*\n\n"
+        "🐂💚 *Good Green Bull*\n\n"
         "Built on Base. Built for builders.\n"
         "The bull that doesn't stop.\n\n"
-        "Choose an option below \ud83d\udc47",
+        "Choose an option below 👇",
         parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup(keyboard),
     )
@@ -446,25 +427,25 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "\ud83d\udcdc *GGB Bot Commands*\n\n"
-        "/start \u2014 Open main menu\n"
-        "/price \u2014 Live $GGB price + 24h change\n"
-        "/bull \u2014 Random Beefy quote\n"
-        "/gm \u2014 Say GM to the herd\n"
-        "/leaderboard \u2014 Top GM senders today\n"
-        "/streaks \u2014 Top GM streak holders\n"
-        "/wallet `<address>` \u2014 Check GGB balance\n"
-        "/token \u2014 Token info + contract\n"
-        "/kit \u2014 GGB Builder Kit info\n"
-        "/nft \u2014 NFT drop info\n"
-        "/herd \u2014 Community stats\n"
-        "/trending \u2014 Trending tokens on Base\n"
-        "/help \u2014 Show this list\n\n"
-        "\ud83d\udc64 *Admin only:*\n"
-        "/daily \u2014 Trigger Beefy Daily push\n"
-        "/revival \u2014 Send relaunch announcement\n"
-        "/broadcast `<msg>` \u2014 Send message to group\n"
-        "/settings \u2014 Admin panel",
+        "📜 *GGB Bot Commands*\n\n"
+        "/start — Open main menu\n"
+        "/price — Live $GGB price + 24h change\n"
+        "/bull — Random Beefy quote\n"
+        "/gm — Say GM to the herd\n"
+        "/leaderboard — Top GM senders today\n"
+        "/streaks — Top GM streak holders\n"
+        "/wallet `<address>` — Check GGB balance\n"
+        "/token — Token info + contract\n"
+        "/kit — GGB Builder Kit info\n"
+        "/nft — NFT drop info\n"
+        "/herd — Community stats\n"
+        "/trending — Trending tokens on Base\n"
+        "/help — Show this list\n\n"
+        "👤 *Admin only:*\n"
+        "/daily — Trigger Beefy Daily push\n"
+        "/revival — Send relaunch announcement\n"
+        "/broadcast `<msg>` — Send message to group\n"
+        "/settings — Admin panel",
         parse_mode="Markdown",
     )
 
@@ -472,12 +453,12 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def price(update: Update, context: ContextTypes.DEFAULT_TYPE):
     price_val, change = await fetch_price_data()
     if price_val is None:
-        await update.message.reply_text("\u26a0\ufe0f Could not fetch price right now. Try again shortly.")
+        await update.message.reply_text("⚠️ Could not fetch price right now. Try again shortly.")
         return
     await update.message.reply_text(
         f"{format_price(price_val, change)}\n\n"
-        f"\ud83d\udcca Chart: https://tinyurl.com/GGBDex\n"
-        f"\ud83d\udcc4 Contract: `{GGB_CONTRACT}`",
+        f"📊 Chart: https://tinyurl.com/GGBDex\n"
+        f"📄 Contract: `{GGB_CONTRACT}`",
         parse_mode="Markdown",
     )
 
@@ -493,17 +474,14 @@ async def gm_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if user.id not in gm_tracker:
         gm_tracker[user.id] = {"name": name, "count": 0}
     gm_tracker[user.id]["count"] += 1
-
-    # Update streak
     streak = update_gm_streak(user.id, name)
-    streak_text = f"\n\ud83d\udd25 Streak: {streak} day{'s' if streak > 1 else ''}!" if streak >= 2 else ""
-
+    streak_text = f"\n🔥 Streak: {streak} day{'s' if streak > 1 else ''}!" if streak >= 2 else ""
     responses = [
-        f"GM {name} \ud83d\udc02\ud83d\udc9a Build mode is ON.{streak_text}",
-        f"GM {name} \ud83d\udc9a The herd is awake. Let's move.{streak_text}",
-        f"GM {name} \ud83d\udc02 Another day. Another rep. Lock in.{streak_text}",
-        f"GM {name} \ud83d\udc9a Still here. Still building. That's the edge.{streak_text}",
-        f"GM {name} \ud83d\udc02\ud83d\udc9a Herd strong. Ship something today.{streak_text}",
+        f"GM {name} 🐂💚 Build mode is ON.{streak_text}",
+        f"GM {name} 💚 The herd is awake. Let's move.{streak_text}",
+        f"GM {name} 🐂 Another day. Another rep. Lock in.{streak_text}",
+        f"GM {name} 💚 Still here. Still building. That's the edge.{streak_text}",
+        f"GM {name} 🐂💚 Herd strong. Ship something today.{streak_text}",
     ]
     await update.message.reply_text(random.choice(responses))
 
@@ -512,29 +490,28 @@ async def leaderboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
     reset_gm_if_needed()
     if not gm_tracker:
         await update.message.reply_text(
-            "No GMs logged yet today. Be the first \ud83d\udc02\ud83d\udc9a\nType /gm to get on the board."
+            "No GMs logged yet today. Be the first 🐂💚\nType /gm to get on the board."
         )
         return
     sorted_users = sorted(gm_tracker.items(), key=lambda x: x[1]["count"], reverse=True)
-    medals = ["\ud83e\udd47", "\ud83e\udd48", "\ud83e\udd49"] + ["\ud83d\udc02"] * 7
-    lines = ["\ud83c\udfc6 *GM Leaderboard \u2014 Today*\n"]
+    medals = ["🥇", "🥈", "🥉"] + ["🐂"] * 7
+    lines = ["🏆 *GM Leaderboard — Today*\n"]
     for i, (uid, data) in enumerate(sorted_users[:10]):
-        lines.append(f"{medals[i]} {data['name']} \u2014 {data['count']} GMs")
-    lines.append("\nType /gm to get on the board \ud83d\udc9a")
+        lines.append(f"{medals[i]} {data['name']} — {data['count']} GMs")
+    lines.append("\nType /gm to get on the board 💚")
     await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
 
 
 async def streaks_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Show top GM streak holders."""
     if not gm_streaks:
-        await update.message.reply_text("No streaks yet. Say /gm every day to build yours \ud83d\udd25")
+        await update.message.reply_text("No streaks yet. Say /gm every day to build yours 🔥")
         return
     sorted_streaks = sorted(gm_streaks.items(), key=lambda x: x[1]["current"], reverse=True)
-    medals = ["\ud83e\udd47", "\ud83e\udd48", "\ud83e\udd49"] + ["\ud83d\udd25"] * 7
-    lines = ["\ud83d\udd25 *GM Streak Leaderboard*\n"]
+    medals = ["🥇", "🥈", "🥉"] + ["🔥"] * 7
+    lines = ["🔥 *GM Streak Leaderboard*\n"]
     for i, (uid, data) in enumerate(sorted_streaks[:10]):
-        lines.append(f"{medals[i]} {data['name']} \u2014 {data['current']} day streak (best: {data['best']})")
-    lines.append("\nSay /gm every day to build your streak \ud83d\udc9a")
+        lines.append(f"{medals[i]} {data['name']} — {data['current']} day streak (best: {data['best']})")
+    lines.append("\nSay /gm every day to build your streak 💚")
     await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
 
 
@@ -545,14 +522,14 @@ async def wallet(update: Update, context: ContextTypes.DEFAULT_TYPE):
     address = context.args[0]
     balance = await fetch_wallet_balance(address)
     if balance is None:
-        await update.message.reply_text("\u26a0\ufe0f Could not fetch wallet data. Check the address and try again.")
+        await update.message.reply_text("⚠️ Could not fetch wallet data. Check the address and try again.")
         return
     price_val, _ = await fetch_price_data()
-    usd_str = f"\ud83d\udcb5 \u2248 ${balance * price_val:,.2f} USD" if price_val else ""
+    usd_str = f"💵 ≈ ${balance * price_val:,.2f} USD" if price_val else ""
     short_addr = f"{address[:6]}...{address[-4:]}"
     await update.message.reply_text(
-        f"\ud83d\udc5b Wallet: `{short_addr}`\n"
-        f"\ud83d\udc02 GGB Balance: {balance:,.2f} GGB\n"
+        f"👛 Wallet: `{short_addr}`\n"
+        f"🐂 GGB Balance: {balance:,.2f} GGB\n"
         f"{usd_str}",
         parse_mode="Markdown",
     )
@@ -560,45 +537,45 @@ async def wallet(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def token(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "\ud83d\udcc8 *Good Green Bull \u2014 Token Info*\n\n"
+        "📈 *Good Green Bull — Token Info*\n\n"
         "Name: Good Green Bull\n"
         "Symbol: $GGB\n"
         "Chain: Base\n"
         "Decimals: 18\n"
         f"Contract: `{GGB_CONTRACT}`\n\n"
-        f"\ud83d\udd17 https://basescan.org/token/{GGB_CONTRACT}",
+        f"🔗 https://basescan.org/token/{GGB_CONTRACT}",
         parse_mode="Markdown",
     )
 
 
 async def kit(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "\ud83d\udee0\ufe0f *GGB Builder Kit*\n\n"
-        "The full content and brand system behind Good Green Bull \u2014 "
+        "🛠️ *GGB Builder Kit*\n\n"
+        "The full content and brand system behind Good Green Bull — "
         "packaged for builders running their own brand on Base or Farcaster.\n\n"
-        "\u2705 Content calendar + rotation framework\n"
-        "\u2705 30 social post templates \u2014 X + Farcaster\n"
-        "\u2705 10 AI image prompts with guardrails\n"
-        "\u2705 Brand voice guide\n"
-        "\u2705 Mascot design rules\n"
-        "\u2705 Monetisation framework\n"
-        "\u2705 Quick-start checklist\n\n"
-        "\ud83d\udcb0 \u00a335 \u2014 Instant download\n"
-        "\ud83d\udd17 https://goodgreenbull.gumroad.com",
+        "✅ Content calendar + rotation framework\n"
+        "✅ 30 social post templates — X + Farcaster\n"
+        "✅ 10 AI image prompts with guardrails\n"
+        "✅ Brand voice guide\n"
+        "✅ Mascot design rules\n"
+        "✅ Monetisation framework\n"
+        "✅ Quick-start checklist\n\n"
+        "💰 £35 — Instant download\n"
+        "🔗 https://goodgreenbull.gumroad.com",
         parse_mode="Markdown",
     )
 
 
 async def nft(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "\ud83c\udfa8 *Beefy Prime: Series One*\n\n"
+        "🎨 *Beefy Prime: Series One*\n\n"
         "50 cinematic 1/1 pieces. Base chain.\n"
         "The founding archive of Good Green Bull.\n\n"
         "Holders receive:\n"
-        "\u2014 Exclusive founder role in this group\n"
-        "\u2014 First access to all future drops\n\n"
-        "\ud83d\udfe1 Status: Coming Soon\n"
-        "Follow @goodgreenbull on X for the mint date \ud83d\udc02\ud83d\udc9a",
+        "— Exclusive founder role in this group\n"
+        "— First access to all future drops\n\n"
+        "🟡 Status: Coming Soon\n"
+        "Follow @goodgreenbull on X for the mint date 🐂💚",
         parse_mode="Markdown",
     )
 
@@ -612,52 +589,51 @@ async def herd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception:
             pass
     lines = [
-        "The herd is building. \ud83d\udc02\ud83d\udc9a",
-        "Bulls don't fold when it gets quiet. \ud83d\udc02\ud83d\udc9a",
-        "Still here. Still locked in. \ud83d\udc02\ud83d\udc9a",
-        "Early is a choice. So is being late. \ud83d\udc02\ud83d\udc9a",
-        "The quiet ones are the dangerous ones. \ud83d\udc02\ud83d\udc9a",
+        "The herd is building. 🐂💚",
+        "Bulls don't fold when it gets quiet. 🐂💚",
+        "Still here. Still locked in. 🐂💚",
+        "Early is a choice. So is being late. 🐂💚",
+        "The quiet ones are the dangerous ones. 🐂💚",
     ]
     await update.message.reply_text(
-        f"\ud83d\udc02 *The GGB Herd*\n\n"
+        f"🐂 *The GGB Herd*\n\n"
         f"Members: {count_str}\n"
         f"{random.choice(lines)}\n\n"
-        f"Share the group \ud83d\udc47\nhttps://t.me/goodgreenbull",
+        f"Share the group 👇\nhttps://t.me/goodgreenbull",
         parse_mode="Markdown",
     )
 
 
 async def trending_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Show trending tokens on Base chain."""
-    await update.message.reply_text("\ud83d\udd0d Scanning Base for trending tokens...")
+    await update.message.reply_text("🔍 Scanning Base for trending tokens...")
     tokens = await fetch_base_trending_tokens()
     if not tokens:
-        await update.message.reply_text("No trending tokens found right now. Check back later \ud83d\udc02")
+        await update.message.reply_text("No trending tokens found right now. Check back later 🐂")
         return
-    lines = ["\ud83d\udcc8 *Trending on Base*\n"]
+    lines = ["📈 *Trending on Base*\n"]
     for t in tokens:
         change_str = f"+{t['change_24h']:.1f}%" if t['change_24h'] >= 0 else f"{t['change_24h']:.1f}%"
-        arrow = "\ud83d\udfe2" if t['change_24h'] >= 0 else "\ud83d\udd34"
+        arrow = "🟢" if t['change_24h'] >= 0 else "🔴"
         lines.append(
-            f"{arrow} *{t['symbol']}* \u2014 ${t['price']:.6f}\n"
+            f"{arrow} *{t['symbol']}* — ${t['price']:.6f}\n"
             f"   Vol: ${t['volume_24h']:,.0f} | {change_str}\n"
             f"   `{t['address'][:8]}...{t['address'][-4:]}`"
         )
-    lines.append("\n_Always DYOR. Not financial advice._ \ud83d\udc02\ud83d\udc9a")
+    lines.append("\n_Always DYOR. Not financial advice._ 🐂💚")
     await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
 
 
 async def settings(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user):
-        await update.message.reply_text("\u26d4 Admin only.")
+        await update.message.reply_text("⛔ Admin only.")
         return
     keyboard = [
-        [InlineKeyboardButton("\ud83d\udce4 Trigger Daily Post",  callback_data="trigger_daily")],
-        [InlineKeyboardButton("\ud83d\udce3 Send Revival Blast",  callback_data="send_revival")],
-        [InlineKeyboardButton("\ud83d\udcc8 Scan Base Tokens Now", callback_data="scan_tokens")],
+        [InlineKeyboardButton("📤 Trigger Daily Post",  callback_data="trigger_daily")],
+        [InlineKeyboardButton("📣 Send Revival Blast",  callback_data="send_revival")],
+        [InlineKeyboardButton("📈 Scan Base Tokens Now", callback_data="scan_tokens")],
     ]
     await update.message.reply_text(
-        "\u2699\ufe0f *Admin Settings*",
+        "⚙️ *Admin Settings*",
         parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup(keyboard),
     )
@@ -665,65 +641,57 @@ async def settings(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def daily_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user):
-        await update.message.reply_text("\u26d4 Admin only.")
+        await update.message.reply_text("⛔ Admin only.")
         return
-    await update.message.reply_text("\ud83d\udce4 Sending Beefy Daily now...")
+    await update.message.reply_text("📤 Sending Beefy Daily now...")
     await send_beefy_daily()
 
 
 async def revival_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user):
-        await update.message.reply_text("\u26d4 Admin only.")
+        await update.message.reply_text("⛔ Admin only.")
         return
-    await update.message.reply_text("\ud83d\udce3 Sending revival blast now...")
+    await update.message.reply_text("📣 Sending revival blast now...")
     await send_revival_blast()
 
 
 async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Admin only \u2014 send a custom message to the group."""
     if not is_admin(update.effective_user):
-        await update.message.reply_text("\u26d4 Admin only.")
+        await update.message.reply_text("⛔ Admin only.")
         return
     if not context.args:
         await update.message.reply_text("Usage: `/broadcast Your message here`", parse_mode="Markdown")
         return
     msg = " ".join(context.args)
     if not TELEGRAM_GROUP_ID:
-        await update.message.reply_text("\u26a0\ufe0f TELEGRAM_GROUP_ID not set.")
+        await update.message.reply_text("⚠️ TELEGRAM_GROUP_ID not set.")
         return
     try:
         await application.bot.send_message(chat_id=int(TELEGRAM_GROUP_ID), text=msg)
-        await update.message.reply_text("\u2705 Broadcast sent.")
+        await update.message.reply_text("✅ Broadcast sent.")
     except Exception as e:
-        await update.message.reply_text(f"\u26a0\ufe0f Failed: {e}")
+        await update.message.reply_text(f"⚠️ Failed: {e}")
 
 # =============================================================================
 # SCHEDULED POSTS
 # =============================================================================
 
 async def send_beefy_daily():
-    """Fires every day at 08:00 UTC \u2014 themed content calendar post."""
     if not TELEGRAM_GROUP_ID:
-        print("\u26a0\ufe0f TELEGRAM_GROUP_ID not set. Skipping.")
+        print("⚠️ TELEGRAM_GROUP_ID not set. Skipping.")
         return
-
     price_val, change = await fetch_price_data()
     price_line = (
         f"$GGB: ${price_val:.6f} | {'+' if change >= 0 else ''}{change:.2f}% 24h"
         if price_val else "$GGB: Price unavailable"
     )
-
-    # Get today's themed content
     weekday = datetime.now(timezone.utc).weekday()
     theme = DAILY_THEMES[weekday]
     prompt = random.choice(theme["prompts"])
-
-    # Get rotating CTA
     day_of_year = datetime.now(timezone.utc).timetuple().tm_yday
     cta = rotating_ctas[day_of_year % len(rotating_ctas)]
-
     msg = (
-        f"GM Herd \ud83d\udc02\ud83d\udc9a\n\n"
+        f"GM Herd 🐂💚\n\n"
         f"{theme['title']}\n\n"
         f"{get_bull_quote()}\n\n"
         f"{price_line}\n\n"
@@ -732,61 +700,58 @@ async def send_beefy_daily():
     )
     try:
         await application.bot.send_message(chat_id=int(TELEGRAM_GROUP_ID), text=msg)
-        print(f"\u2705 Daily post sent: {theme['title']}")
+        print(f"✅ Daily post sent: {theme['title']}")
     except Exception as e:
-        print(f"\u26a0\ufe0f Daily post failed: {e}")
+        print(f"⚠️ Daily post failed: {e}")
 
 
 async def send_discussion_topic():
-    """Fires every day at 12:00 UTC \u2014 midday conversation starter."""
     if not TELEGRAM_GROUP_ID:
         return
     day_of_year = datetime.now(timezone.utc).timetuple().tm_yday
     topic = discussion_topics[day_of_year % len(discussion_topics)]
-    msg = f"\ud83d\udcac *Midday Discussion*\n\n{topic}"
+    msg = f"💬 *Midday Discussion*\n\n{topic}"
     try:
         await application.bot.send_message(
             chat_id=int(TELEGRAM_GROUP_ID), text=msg, parse_mode="Markdown"
         )
     except Exception as e:
-        print(f"\u26a0\ufe0f Discussion topic failed: {e}")
+        print(f"⚠️ Discussion topic failed: {e}")
 
 
 async def send_weekly_engagement():
-    """Fires every Monday at 09:00 UTC."""
     if not TELEGRAM_GROUP_ID:
         return
     week_num = datetime.now(timezone.utc).isocalendar()[1]
     question = weekly_questions[week_num % len(weekly_questions)]
     msg = (
-        f"\ud83d\udc02 *Builder Monday*\n\n"
+        f"🐂 *Builder Monday*\n\n"
         f"{question}\n\n"
-        f"Best answer gets a shout from @goodgreenbull \ud83d\udc9a"
+        f"Best answer gets a shout from @goodgreenbull 💚"
     )
     try:
         await application.bot.send_message(
             chat_id=int(TELEGRAM_GROUP_ID), text=msg, parse_mode="Markdown"
         )
     except Exception as e:
-        print(f"\u26a0\ufe0f Weekly post failed: {e}")
+        print(f"⚠️ Weekly post failed: {e}")
 
 
 async def send_revival_blast():
-    """One-time relaunch message. Admin-triggered."""
     if not TELEGRAM_GROUP_ID:
         return
     msg = (
-        "\ud83d\udc02\ud83d\udc9a *GGB IS BACK.*\n\n"
+        "🐂💚 *GGB IS BACK.*\n\n"
         "Beefy's been in build mode.\n"
         "Now we move.\n\n"
         "What's coming:\n"
-        "\ud83c\udfa8 Wallpaper Pack \u2014 dropping soon\n"
-        "\ud83d\uddbc\ufe0f Beefy Prime: Series One NFTs \u2014 Base chain\n"
-        "\ud83d\udee0\ufe0f GGB Builder Kit \u2014 for builders running their own brand\n\n"
+        "🎨 Wallpaper Pack — dropping soon\n"
+        "🖼️ Beefy Prime: Series One NFTs — Base chain\n"
+        "🛠️ GGB Builder Kit — for builders running their own brand\n\n"
         "New content. New products. New energy.\n\n"
-        "If you're still here \u2014 you're the founding herd.\n"
+        "If you're still here — you're the founding herd.\n"
         "The ones who stayed get rewarded first.\n\n"
-        "We move. \ud83d\udc02\ud83d\udc9a\n\n"
+        "We move. 🐂💚\n\n"
         "Follow: https://x.com/goodgreenbull\n"
         "Farcaster: https://warpcast.com/goodgreenbull"
     )
@@ -795,48 +760,39 @@ async def send_revival_blast():
             chat_id=int(TELEGRAM_GROUP_ID), text=msg, parse_mode="Markdown"
         )
     except Exception as e:
-        print(f"\u26a0\ufe0f Revival blast failed: {e}")
+        print(f"⚠️ Revival blast failed: {e}")
 
 
 async def scan_base_tokens():
-    """Scheduled scan \u2014 posts trending Base tokens to the group every 6 hours."""
     if not TELEGRAM_GROUP_ID:
         return
-
     tokens = await fetch_base_trending_tokens()
     if not tokens:
         return
-
-    # Filter out already alerted tokens
     new_tokens = [t for t in tokens if t["address"] not in alerted_tokens]
     if not new_tokens:
         return
-
-    lines = ["\ud83d\udcc8 *Trending on Base right now*\n"]
+    lines = ["📈 *Trending on Base right now*\n"]
     for t in new_tokens[:3]:
         change_str = f"+{t['change_24h']:.1f}%" if t['change_24h'] >= 0 else f"{t['change_24h']:.1f}%"
-        arrow = "\ud83d\udfe2" if t['change_24h'] >= 0 else "\ud83d\udd34"
+        arrow = "🟢" if t['change_24h'] >= 0 else "🔴"
         lines.append(
-            f"{arrow} *{t['symbol']}* \u2014 ${t['price']:.6f}\n"
+            f"{arrow} *{t['symbol']}* — ${t['price']:.6f}\n"
             f"   Vol: ${t['volume_24h']:,.0f} | {change_str}"
         )
         alerted_tokens.add(t["address"])
-    lines.append("\n_DYOR. Not financial advice._ \ud83d\udc02\ud83d\udc9a")
-
+    lines.append("\n_DYOR. Not financial advice._ 🐂💚")
     try:
         await application.bot.send_message(
             chat_id=int(TELEGRAM_GROUP_ID), text="\n".join(lines), parse_mode="Markdown"
         )
     except Exception as e:
-        print(f"\u26a0\ufe0f Token scan post failed: {e}")
-
-    # Keep alerted set from growing forever (clear after 200)
+        print(f"⚠️ Token scan post failed: {e}")
     if len(alerted_tokens) > 200:
         alerted_tokens.clear()
 
 
 async def check_milestones():
-    """Check if member count crossed a milestone. Runs every hour."""
     global last_milestone
     if not TELEGRAM_GROUP_ID:
         return
@@ -846,29 +802,28 @@ async def check_milestones():
             if count >= m and last_milestone < m:
                 last_milestone = m
                 msg = (
-                    f"\ud83c\udf89\ud83d\udc02 *MILESTONE: {m} MEMBERS!*\n\n"
+                    f"🎉🐂 *MILESTONE: {m} MEMBERS!*\n\n"
                     f"The herd just hit {m}. That's {m} builders locked in.\n\n"
-                    f"We're just getting started. Share the group \ud83d\udc47\n"
+                    f"We're just getting started. Share the group 👇\n"
                     f"https://t.me/goodgreenbull\n\n"
-                    f"Herd strong. We move. \ud83d\udc02\ud83d\udc9a"
+                    f"Herd strong. We move. 🐂💚"
                 )
                 await application.bot.send_message(
                     chat_id=int(TELEGRAM_GROUP_ID), text=msg, parse_mode="Markdown"
                 )
                 break
     except Exception as e:
-        print(f"\u26a0\ufe0f Milestone check failed: {e}")
+        print(f"⚠️ Milestone check failed: {e}")
 
 # =============================================================================
 # MESSAGE HANDLERS
 # =============================================================================
 
 async def handle_gm_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Responds to natural GM messages in chat."""
     if not update.message or not update.message.text:
         return
     text = update.message.text.strip().lower()
-    if text in ("gm", "gm!", "gm \ud83d\udc02", "gm \ud83d\udc9a", "gm \ud83d\udc02\ud83d\udc9a", "good morning"):
+    if text in ("gm", "gm!", "gm 🐂", "gm 💚", "gm 🐂💚", "good morning"):
         reset_gm_if_needed()
         user = update.effective_user
         name = user.first_name or "Bull"
@@ -876,40 +831,32 @@ async def handle_gm_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             gm_tracker[user.id] = {"name": name, "count": 0}
         gm_tracker[user.id]["count"] += 1
         streak = update_gm_streak(user.id, name)
-        streak_text = f" \ud83d\udd25 {streak}-day streak!" if streak >= 2 else ""
+        streak_text = f" 🔥 {streak}-day streak!" if streak >= 2 else ""
         responses = [
-            f"GM {name} \ud83d\udc02\ud83d\udc9a{streak_text}",
-            f"GM {name} \ud83d\udc9a Lock in.{streak_text}",
-            f"GM {name} \ud83d\udc02 Build something today.{streak_text}",
-            f"GM {name} \ud83d\udc9a Herd strong.{streak_text}",
+            f"GM {name} 🐂💚{streak_text}",
+            f"GM {name} 💚 Lock in.{streak_text}",
+            f"GM {name} 🐂 Build something today.{streak_text}",
+            f"GM {name} 💚 Herd strong.{streak_text}",
         ]
         await update.message.reply_text(random.choice(responses))
 
 
 async def handle_reactive_replies(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """React to keywords in group chat with brand-voice replies."""
     if not update.message or not update.message.text:
         return
     text = update.message.text.strip().lower()
-
-    # Don't reply to every message \u2014 only trigger on short messages
     if len(text) > 100:
         return
-
-    # Don't reply to commands
     if text.startswith("/"):
         return
-
-    # Check for keyword matches (only reply ~30% of the time to avoid spam)
     for keyword, replies in REACTIVE_REPLIES.items():
-        if keyword in text.split():  # Match whole words only
-            if random.random() < 0.30:  # 30% reply rate
+        if keyword in text.split():
+            if random.random() < 0.30:
                 await update.message.reply_text(random.choice(replies))
-            return  # Only match one keyword per message
+            return
 
 
 async def welcome_new_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Fires when a new member joins the group."""
     result = update.chat_member
     if not result:
         return
@@ -920,22 +867,21 @@ async def welcome_new_member(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await context.bot.send_message(
             chat_id=result.chat.id,
             text=(
-                f"\ud83d\udc02\ud83d\udc9a Welcome to the herd, {name}!\n\n"
+                f"🐂💚 Welcome to the herd, {name}!\n\n"
                 f"Good Green Bull is a digital brand and builder community on Base.\n\n"
                 f"Start here:\n"
-                f"\ud83d\udcc8 /price \u2014 Live $GGB price\n"
-                f"\ud83d\udc02 /bull \u2014 Get a Beefy quote\n"
-                f"\ud83d\udc4b /gm \u2014 Say GM to the herd\n"
-                f"\ud83d\udee0\ufe0f /kit \u2014 GGB Builder Kit\n"
-                f"\ud83c\udfa8 /nft \u2014 Upcoming NFT drop\n\n"
-                f"Follow us on X \ud83d\udc49 https://x.com/goodgreenbull\n\n"
-                f"Herd strong. We move. \ud83d\udc02\ud83d\udc9a"
+                f"📈 /price — Live $GGB price\n"
+                f"🐂 /bull — Get a Beefy quote\n"
+                f"👋 /gm — Say GM to the herd\n"
+                f"🛠️ /kit — GGB Builder Kit\n"
+                f"🎨 /nft — Upcoming NFT drop\n\n"
+                f"Follow us on X 👉 https://x.com/goodgreenbull\n\n"
+                f"Herd strong. We move. 🐂💚"
             ),
         )
 
 
 async def detect_spam(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Mutes users sending more than 5 messages in 10 seconds."""
     if not update.message or not update.effective_user:
         return
     user_id = update.effective_user.id
@@ -953,7 +899,7 @@ async def detect_spam(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 permissions=ChatPermissions(can_send_messages=False),
                 until_date=now + timedelta(minutes=10),
             )
-            await context.bot.send_message(chat_id, text="\u26a0\ufe0f User muted 10 mins for spam.")
+            await context.bot.send_message(chat_id, text="⚠️ User muted 10 mins for spam.")
         except Exception:
             pass
 
@@ -969,26 +915,26 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif query.data == "price":
         price_val, change = await fetch_price_data()
         if price_val is None:
-            await query.edit_message_text("\u26a0\ufe0f Could not fetch price right now.")
+            await query.edit_message_text("⚠️ Could not fetch price right now.")
             return
         await query.edit_message_text(
-            f"{format_price(price_val, change)}\n\n\ud83d\udcca https://tinyurl.com/GGBDex"
+            f"{format_price(price_val, change)}\n\n📊 https://tinyurl.com/GGBDex"
         )
     elif query.data == "nft_info":
         await query.edit_message_text(
-            "\ud83c\udfa8 Beefy Prime: Series One\n\n"
+            "🎨 Beefy Prime: Series One\n\n"
             "50 cinematic 1/1 pieces. Base chain.\n"
-            "Status: Coming Soon \ud83d\udfe1\n\n"
-            "Follow @goodgreenbull on X for the mint date \ud83d\udc02\ud83d\udc9a"
+            "Status: Coming Soon 🟡\n\n"
+            "Follow @goodgreenbull on X for the mint date 🐂💚"
         )
     elif query.data == "trigger_daily":
-        await query.edit_message_text("\ud83d\udce4 Sending daily post...")
+        await query.edit_message_text("📤 Sending daily post...")
         await send_beefy_daily()
     elif query.data == "send_revival":
-        await query.edit_message_text("\ud83d\udce3 Sending revival blast...")
+        await query.edit_message_text("📣 Sending revival blast...")
         await send_revival_blast()
     elif query.data == "scan_tokens":
-        await query.edit_message_text("\ud83d\udd0d Scanning Base tokens...")
+        await query.edit_message_text("🔍 Scanning Base tokens...")
         await scan_base_tokens()
 
 # =============================================================================
@@ -997,7 +943,7 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 @app.route("/", methods=["GET"])
 async def home():
-    return "\ud83d\udc02 Beefy Bot v2 \u2014 GGB Brand Engine. Built on Base."
+    return "🐂 Beefy Bot v2 — GGB Brand Engine. Built on Base."
 
 
 @app.route(WEBHOOK_PATH, methods=["POST"])
@@ -1008,7 +954,7 @@ async def webhook():
     return "OK"
 
 # =============================================================================
-# HANDLER REGISTRATION
+# HANDLER REGISTRATION — runs at module import (required for Hypercorn)
 # =============================================================================
 
 def register_handlers():
@@ -1035,14 +981,18 @@ def register_handlers():
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_reactive_replies), group=2)
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, detect_spam), group=3)
 
+# Register handlers immediately so they're ready when Hypercorn imports this module
+register_handlers()
+
 # =============================================================================
-# STARTUP
+# STARTUP — @app.before_serving runs when Hypercorn starts serving
 # =============================================================================
 
+@app.before_serving
 async def on_startup():
     await application.initialize()
     await application.bot.set_webhook(url=WEBHOOK_URL)
-    print(f"\u2705 Webhook set: {WEBHOOK_URL}")
+    print(f"✅ Webhook set: {WEBHOOK_URL}")
 
     scheduler = AsyncIOScheduler(timezone="UTC")
     scheduler.add_job(send_beefy_daily,       "cron", hour=8, minute=0)
@@ -1051,12 +1001,5 @@ async def on_startup():
     scheduler.add_job(scan_base_tokens,       "interval", hours=6)
     scheduler.add_job(check_milestones,       "interval", hours=1)
     scheduler.start()
-    print("\u2705 Scheduler: Daily 08:00 | Discussion 12:00 | Monday 09:00 | Token scan 6h | Milestones 1h")
-    print("\ud83d\udc02 Beefy Bot v2 \u2014 Brand Engine \u2014 LIVE")
-
-
-if __name__ == "__main__":
-    register_handlers()
-    loop = asyncio.get_event_loop()
-    loop.run_until_complete(on_startup())
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
+    print("✅ Scheduler: Daily 08:00 | Discussion 12:00 | Monday 09:00 | Token scan 6h | Milestones 1h")
+    print("🐂 Beefy Bot v2 — Brand Engine — LIVE")
