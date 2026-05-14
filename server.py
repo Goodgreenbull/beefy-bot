@@ -112,52 +112,134 @@ def get_bull_quote():
     return bull_quotes[idx]
 
 async def fetch_base_trending_tokens():
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get("https://api.dexscreener.com/token-profiles/latest/v1", timeout=aiohttp.ClientTimeout(total=10)) as resp:
-                profiles = await resp.json()
-            base_tokens = [p for p in profiles if p.get("chainId") == "base"][:20]
-            trending = []
-            for token in base_tokens[:10]:
-                addr = token.get("tokenAddress", "")
-                if not addr:
-                    continue
+    """
+    Fetch trending Base tokens using multiple DexScreener strategies:
+    1. Try /token-boosts/top/v1 (actively boosted tokens)
+    2. If that returns nothing for Base, search popular Base token names directly
+    """
+    trending = []
+    seen_addrs = set()
+
+    async with aiohttp.ClientSession() as session:
+        # Strategy 1: Token boosts (actively promoted/trending)
+        try:
+            async with session.get("https://api.dexscreener.com/token-boosts/top/v1", timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                if resp.status == 200:
+                    boosts = await resp.json()
+                    base_boosts = [b for b in boosts if b.get("chainId") == "base"][:15]
+                    for b in base_boosts:
+                        addr = b.get("tokenAddress", "")
+                        if not addr or addr in seen_addrs:
+                            continue
+                        seen_addrs.add(addr)
+                        try:
+                            async with session.get(f"https://api.dexscreener.com/latest/dex/tokens/{addr}", timeout=aiohttp.ClientTimeout(total=8)) as resp2:
+                                data = await resp2.json()
+                                pairs = data.get("pairs", [])
+                                if not pairs:
+                                    continue
+                                pair = pairs[0]
+                                vol = float(pair.get("volume", {}).get("h24", 0))
+                                liquidity = float(pair.get("liquidity", {}).get("usd", 0))
+                                if vol >= 5000 and liquidity >= 2000:
+                                    created = pair.get("pairCreatedAt", 0)
+                                    age_days = (datetime.now(timezone.utc).timestamp() * 1000 - created) / 86400000 if created else 999
+                                    trending.append({"name": pair.get("baseToken", {}).get("name", "Unknown"), "symbol": pair.get("baseToken", {}).get("symbol", "???"), "price": float(pair.get("priceUsd", 0)), "change_24h": float(pair.get("priceChange", {}).get("h24", 0)), "volume_24h": vol, "liquidity": liquidity, "address": addr, "url": pair.get("url", ""), "age_days": age_days})
+                        except Exception:
+                            continue
+        except Exception as e:
+            print(f"⚠️ Token boosts fetch failed: {e}")
+
+        # Strategy 2: If we got fewer than 5, search popular Base token names
+        if len(trending) < 5:
+            search_terms = ["brett base", "degen base", "toshi base", "aero base", "higher base", "normie base", "bankr base", "mog base", "keycat base", "bald base"]
+            random.shuffle(search_terms)
+            for term in search_terms:
+                if len(trending) >= 10:
+                    break
                 try:
-                    async with session.get(f"https://api.dexscreener.com/latest/dex/tokens/{addr}", timeout=aiohttp.ClientTimeout(total=8)) as resp2:
-                        data = await resp2.json()
+                    async with session.get(f"https://api.dexscreener.com/latest/dex/search?q={term}", timeout=aiohttp.ClientTimeout(total=8)) as resp:
+                        data = await resp.json()
                         pairs = data.get("pairs", [])
-                        if not pairs: continue
-                        pair = pairs[0]
+                        base_pairs = [p for p in pairs if p.get("chainId") == "base"]
+                        if not base_pairs:
+                            continue
+                        pair = base_pairs[0]
+                        addr = pair.get("baseToken", {}).get("address", "")
+                        if addr in seen_addrs:
+                            continue
+                        seen_addrs.add(addr)
                         vol = float(pair.get("volume", {}).get("h24", 0))
-                        change = float(pair.get("priceChange", {}).get("h24", 0))
                         liquidity = float(pair.get("liquidity", {}).get("usd", 0))
-                        created = pair.get("pairCreatedAt", 0)
-                        age_days = (datetime.now(timezone.utc).timestamp() * 1000 - created) / 86400000 if created else 999
-                        if vol >= 10000 and liquidity >= 5000:
-                            trending.append({"name": pair.get("baseToken", {}).get("name", "Unknown"), "symbol": pair.get("baseToken", {}).get("symbol", "???"), "price": float(pair.get("priceUsd", 0)), "change_24h": change, "volume_24h": vol, "liquidity": liquidity, "address": addr, "url": pair.get("url", ""), "age_days": age_days})
-                except Exception: continue
-            trending.sort(key=lambda x: x["volume_24h"], reverse=True)
-            return trending[:10]
-    except Exception as e:
-        print(f"⚠️ Base token scan failed: {e}")
-        return []
+                        if vol >= 5000 and liquidity >= 2000:
+                            created = pair.get("pairCreatedAt", 0)
+                            age_days = (datetime.now(timezone.utc).timestamp() * 1000 - created) / 86400000 if created else 999
+                            trending.append({"name": pair.get("baseToken", {}).get("name", "Unknown"), "symbol": pair.get("baseToken", {}).get("symbol", "???"), "price": float(pair.get("priceUsd", 0)), "change_24h": float(pair.get("priceChange", {}).get("h24", 0)), "volume_24h": vol, "liquidity": liquidity, "address": addr, "url": pair.get("url", ""), "age_days": age_days})
+                except Exception:
+                    continue
+
+    trending.sort(key=lambda x: x["volume_24h"], reverse=True)
+    return trending[:10]
 
 async def lookup_token(query):
-    try:
-        async with aiohttp.ClientSession() as session:
-            url = f"https://api.dexscreener.com/latest/dex/tokens/{query}" if query.startswith("0x") and len(query) >= 10 else f"https://api.dexscreener.com/latest/dex/search?q={query}"
-            async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
-                data = await resp.json()
-                pairs = data.get("pairs", [])
-                if not pairs: return None
-                base_pairs = [p for p in pairs if p.get("chainId") == "base"]
-                pair = base_pairs[0] if base_pairs else pairs[0]
-                created = pair.get("pairCreatedAt", 0)
-                age_days = (datetime.now(timezone.utc).timestamp() * 1000 - created) / 86400000 if created else None
-                return {"name": pair.get("baseToken", {}).get("name", "Unknown"), "symbol": pair.get("baseToken", {}).get("symbol", "???"), "chain": pair.get("chainId", "unknown"), "price": float(pair.get("priceUsd", 0)), "change_5m": float(pair.get("priceChange", {}).get("m5", 0)), "change_1h": float(pair.get("priceChange", {}).get("h1", 0)), "change_6h": float(pair.get("priceChange", {}).get("h6", 0)), "change_24h": float(pair.get("priceChange", {}).get("h24", 0)), "volume_24h": float(pair.get("volume", {}).get("h24", 0)), "liquidity": float(pair.get("liquidity", {}).get("usd", 0)), "address": pair.get("baseToken", {}).get("address", ""), "dex": pair.get("dexId", "unknown"), "url": pair.get("url", ""), "age_days": age_days, "txns_24h_buys": pair.get("txns", {}).get("h24", {}).get("buys", 0), "txns_24h_sells": pair.get("txns", {}).get("h24", {}).get("sells", 0)}
-    except Exception as e:
-        print(f"⚠️ Token lookup failed: {e}")
+    """
+    Look up a token by name or address. Strips $ prefix.
+    If first search fails, retries with 'base' appended to find Base chain tokens.
+    """
+    # Clean up the query
+    query = query.strip().lstrip("$").strip()
+    if not query:
         return None
+
+    async with aiohttp.ClientSession() as session:
+        # Determine if it's an address or a name search
+        is_address = query.startswith("0x") and len(query) >= 10
+
+        # Try up to 2 search strategies
+        search_urls = []
+        if is_address:
+            search_urls.append(f"https://api.dexscreener.com/latest/dex/tokens/{query}")
+        else:
+            search_urls.append(f"https://api.dexscreener.com/latest/dex/search?q={query}")
+            search_urls.append(f"https://api.dexscreener.com/latest/dex/search?q={query} base")
+
+        for url in search_urls:
+            try:
+                async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                    data = await resp.json()
+                    pairs = data.get("pairs", [])
+                    if not pairs:
+                        continue
+
+                    # Prioritize Base chain pairs
+                    base_pairs = [p for p in pairs if p.get("chainId") == "base"]
+                    pair = base_pairs[0] if base_pairs else pairs[0]
+
+                    created = pair.get("pairCreatedAt", 0)
+                    age_days = (datetime.now(timezone.utc).timestamp() * 1000 - created) / 86400000 if created else None
+
+                    return {
+                        "name": pair.get("baseToken", {}).get("name", "Unknown"),
+                        "symbol": pair.get("baseToken", {}).get("symbol", "???"),
+                        "chain": pair.get("chainId", "unknown"),
+                        "price": float(pair.get("priceUsd", 0)),
+                        "change_5m": float(pair.get("priceChange", {}).get("m5", 0)),
+                        "change_1h": float(pair.get("priceChange", {}).get("h1", 0)),
+                        "change_6h": float(pair.get("priceChange", {}).get("h6", 0)),
+                        "change_24h": float(pair.get("priceChange", {}).get("h24", 0)),
+                        "volume_24h": float(pair.get("volume", {}).get("h24", 0)),
+                        "liquidity": float(pair.get("liquidity", {}).get("usd", 0)),
+                        "address": pair.get("baseToken", {}).get("address", ""),
+                        "dex": pair.get("dexId", "unknown"),
+                        "url": pair.get("url", ""),
+                        "age_days": age_days,
+                        "txns_24h_buys": pair.get("txns", {}).get("h24", {}).get("buys", 0),
+                        "txns_24h_sells": pair.get("txns", {}).get("h24", {}).get("sells", 0),
+                    }
+            except Exception:
+                continue
+
+    return None
 
 def is_admin(user):
     if ADMIN_CHAT_ID and str(user.id) == str(ADMIN_CHAT_ID): return True
@@ -265,13 +347,14 @@ async def trending_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def lookup_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
-        await update.message.reply_text("Usage: `/lookup <token name or address>`\n\nExamples:\n`/lookup BRETT`\n`/lookup 0x532f27...`", parse_mode="Markdown")
+        await update.message.reply_text("Usage: `/lookup <token name or address>`\n\nExamples:\n`/lookup BRETT`\n`/lookup $BANKR`\n`/lookup 0x532f27...`", parse_mode="Markdown")
         return
     query = " ".join(context.args)
-    await update.message.reply_text(f"🔍 Looking up *{query}*...", parse_mode="Markdown")
+    display_query = query.lstrip("$")
+    await update.message.reply_text(f"🔍 Looking up *{display_query}*...", parse_mode="Markdown")
     token = await lookup_token(query)
     if not token:
-        await update.message.reply_text(f"❌ No results for '{query}'. Try the contract address or a different name.")
+        await update.message.reply_text(f"❌ No results for '{display_query}'. Try the full token name or contract address.")
         return
     def fmt(val):
         return f"🟢 +{val:.1f}%" if val >= 0 else f"🔴 {val:.1f}%"
