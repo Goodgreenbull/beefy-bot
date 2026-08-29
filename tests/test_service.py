@@ -41,6 +41,7 @@ class ScannerServiceTests(unittest.IsolatedAsyncioTestCase):
         state = SQLiteState(":memory:")
         config = ScannerConfig(active_candidate_limit=5, min_alert_score=60, warmup_cycles=0)
         alerts = []
+        state.mark_feed_error("telegram-alerts", RuntimeError("previous delivery failed"))
 
         async def capture(candidate, market, score):
             alerts.append((candidate.key, score.signal))
@@ -51,6 +52,9 @@ class ScannerServiceTests(unittest.IsolatedAsyncioTestCase):
         try:
             first = await service.run_cycle()
             second = await service.run_cycle()
+            telegram_health = next(
+                item for item in state.health() if item["feed_name"] == "telegram-alerts"
+            )
         finally:
             await service.stop()
 
@@ -58,3 +62,4 @@ class ScannerServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(second["alerts"], 0)
         self.assertEqual(len(alerts), 1)
         self.assertEqual(alerts[0][0], f"base:{TOKEN}")
+        self.assertIsNone(telegram_health["last_error"])

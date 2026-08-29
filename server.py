@@ -287,7 +287,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🐂💚 *Good Green Bull*\n\nBuilt on Base. Built for builders.\nThe bull that doesn't stop.\n\nChoose an option below 👇", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("📜 *GGB Bot Commands*\n\n🐂 *Community*\n/gm — Say GM to the herd\n/bull — Random Beefy quote\n/leaderboard — Top GM senders today\n/streaks — Top GM streak holders\n/herd — Community stats\n/about — What is GGB?\n\n📈 *Alpha Discovery*\n/trending — Top trending tokens on Base\n/lookup `<token>` — Deep dive any token\n\n🗳️ *Engagement*\n/poll `<question>` — Create a Yes/No poll\n\n👤 *Admin only*\n/scannerstatus — Scanner and feed health\n/scannow — Run a scan immediately\n/daily — Trigger daily post\n/revival — Relaunch announcement\n/broadcast `<msg>` — Message the group\n/settings — Admin panel\n\n/help — Show this list", parse_mode="Markdown")
+    await update.message.reply_text("📜 *GGB Bot Commands*\n\n🐂 *Community*\n/gm — Say GM to the herd\n/bull — Random Beefy quote\n/leaderboard — Top GM senders today\n/streaks — Top GM streak holders\n/herd — Community stats\n/about — What is GGB?\n\n📈 *Alpha Discovery*\n/trending — Top trending tokens on Base\n/lookup `<token>` — Deep dive any token\n\n🗳️ *Engagement*\n/poll `<question>` — Create a Yes/No poll\n\n👤 *Admin only*\n/scannerstatus — Scanner and feed health\n/scannow — Run a scan immediately\n/alerttest — Test the configured signal destination\n/daily — Trigger daily post\n/revival — Relaunch announcement\n/broadcast `<msg>` — Message the group\n/settings — Admin panel\n\n/help — Show this list", parse_mode="Markdown")
 
 async def about_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🐂💚 *What is Good Green Bull?*\n\nGGB is a builder community on Base chain.\n\nWe track trending tokens, share alpha, and support each other in building projects that actually last.\n\nBeefy Bot is the group's engine — it posts daily content, scans Base for trending tokens, alerts the group to volume breakouts, and keeps the herd engaged.\n\nNo hype. No empty promises.\nJust builders who ship.\n\n🌐 goodgreenbull.com\n🕊️ https://x.com/BeefytheBull\n📣 https://t.me/goodgreenbull\n\nHerd strong. We move. 🐂💚", parse_mode="Markdown")
@@ -439,7 +439,12 @@ async def scannerstatus_command(update: Update, context: ContextTypes.DEFAULT_TY
     status = scanner_service.status()
     last_cycle = status.get("last_cycle_at") or "not run yet"
     unhealthy = [item["feed_name"] for item in status.get("feeds", []) if item.get("last_error")]
-    health_line = "All feeds healthy" if not unhealthy else f"Needs attention: {', '.join(unhealthy)}"
+    if not unhealthy:
+        health_line = "All feeds healthy"
+    elif "telegram-alerts" in unhealthy:
+        health_line = f"Needs attention: {', '.join(unhealthy)}\nRun /alerttest to diagnose Telegram delivery."
+    else:
+        health_line = f"Needs attention: {', '.join(unhealthy)}"
     await update.message.reply_text(
         "🔎 First-Leg Scanner\n\n"
         f"Cadence: every {scanner_config.interval_seconds // 60} minute(s)\n"
@@ -466,13 +471,62 @@ async def scannow_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+def telegram_chat_target(value: str):
+    """Allow numeric chat IDs and Telegram @channel usernames."""
+    cleaned = str(value).strip()
+    try:
+        return int(cleaned)
+    except ValueError:
+        return cleaned
+
+
+def telegram_delivery_diagnosis(error: Exception) -> str:
+    message = str(error).lower()
+    if "chat not found" in message:
+        return "Chat not found. Set SIGNAL_TELEGRAM_CHAT_ID to this chat's numeric ID in Render."
+    if "bot was blocked" in message:
+        return "The destination user has blocked Beefy Bot. Unblock it and send /start."
+    if "not enough rights" in message or "forbidden" in message:
+        return "Beefy Bot lacks permission to post in the configured destination."
+    if "empty" in message or "not set" in message:
+        return "No alert chat is configured in Render."
+    return f"Telegram rejected the test ({type(error).__name__}). Check the configured chat ID and bot permissions."
+
+
+async def alerttest_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update.effective_user):
+        await update.message.reply_text("⛔ Admin only.")
+        return
+    if not scanner_config.alert_chat_id:
+        await update.message.reply_text(
+            "❌ No signal destination is configured. Set SIGNAL_TELEGRAM_CHAT_ID in Render."
+        )
+        return
+    try:
+        await application.bot.send_message(
+            chat_id=telegram_chat_target(scanner_config.alert_chat_id),
+            text=(
+                "🧪 <b>Beefy First-Leg Alert Test</b>\n\n"
+                "Telegram delivery is working. This is a test only—not a trading signal."
+            ),
+            parse_mode="HTML",
+        )
+        if scanner_state is not None:
+            scanner_state.mark_feed_success("telegram-alerts", 1)
+        await update.message.reply_text("✅ Test alert delivered to the configured signal destination.")
+    except Exception as error:
+        if scanner_state is not None:
+            scanner_state.mark_feed_error("telegram-alerts", error)
+        await update.message.reply_text(f"❌ {telegram_delivery_diagnosis(error)}")
+
+
 async def send_first_leg_alert(
     candidate: Candidate, snapshot: MarketSnapshot, result: ScoreResult
 ):
     if not scanner_config.alert_chat_id:
         raise RuntimeError("SIGNAL_TELEGRAM_CHAT_ID or TELEGRAM_GROUP_ID is not set")
     await application.bot.send_message(
-        chat_id=int(scanner_config.alert_chat_id),
+        chat_id=telegram_chat_target(scanner_config.alert_chat_id),
         text=format_alert(candidate, snapshot, result),
         parse_mode="HTML",
         disable_web_page_preview=True,
@@ -736,6 +790,7 @@ def register_handlers():
     application.add_handler(CommandHandler("settings", settings))
     application.add_handler(CommandHandler("scannerstatus", scannerstatus_command))
     application.add_handler(CommandHandler("scannow", scannow_command))
+    application.add_handler(CommandHandler("alerttest", alerttest_command))
     application.add_handler(CallbackQueryHandler(button))
     application.add_handler(ChatMemberHandler(welcome_new_member, ChatMemberHandler.CHAT_MEMBER))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_gm_text), group=1)

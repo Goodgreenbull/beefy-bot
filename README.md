@@ -63,6 +63,7 @@ Admin-only Telegram commands:
 
 - `/scannerstatus` — last cycle, 24-hour candidates/snapshots/alerts, and feed health.
 - `/scannow` — run one cycle immediately.
+- `/alerttest` — send a clearly labelled test message to the configured signal destination.
 
 Existing community commands and moderation remain in `server.py`.
 

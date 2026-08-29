@@ -194,6 +194,7 @@ class ScannerService:
                 ):
                     try:
                         await self.alert_callback(candidate, snapshot, result)
+                        self.state.mark_feed_success("telegram-alerts", 1)
                         self.state.record_alert(candidate.key, result)
                         alert_count += 1
                     except Exception as error:
