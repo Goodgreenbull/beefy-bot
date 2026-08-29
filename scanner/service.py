@@ -128,6 +128,8 @@ class ScannerService:
         started = time.monotonic()
         async with self.lock:
             self.last_status["running"] = True
+            completed_warmups = _integer(self.state.get_cursor("scanner:warmup_cycles"), 0)
+            warmup_complete = completed_warmups >= self.config.warmup_cycles
             discovered_lists = await asyncio.gather(*(self._run_feed(feed) for feed in self.feeds))
             discovered = [candidate for rows in discovered_lists for candidate in rows]
             for candidate in discovered:
@@ -179,8 +181,10 @@ class ScannerService:
                 self.state.add_snapshot(candidate.key, snapshot)
                 self.state.update_score(candidate.key, result)
                 if (
-                    result.eligible
+                    warmup_complete
+                    and result.eligible
                     and self.alert_callback
+                    and alert_count < self.config.max_alerts_per_cycle
                     and self.state.alert_allowed(
                         candidate.key,
                         result,
@@ -194,6 +198,9 @@ class ScannerService:
                         alert_count += 1
                     except Exception as error:
                         self.state.mark_feed_error("telegram-alerts", error)
+
+            if not warmup_complete:
+                self.state.set_cursor("scanner:warmup_cycles", str(completed_warmups + 1))
 
             self.last_status = {
                 "running": False,

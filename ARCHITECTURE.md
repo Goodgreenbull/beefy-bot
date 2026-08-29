@@ -58,8 +58,10 @@ Outputs are `MONITOR`, `EARLY WATCH`, `STRONG WATCH`, or `AVOID LATE`. None of t
 
 ## Operational limits
 
-This architecture closes the hourly/two-hour latency gap; it does not prove profitability. Scores and thresholds need forward testing with every alert and subsequent maximum favorable/adverse excursion recorded before any auto-trading discussion. Public APIs and RPCs have rate and indexing delays, so production provider endpoints and persistent storage are important.
+This architecture closes the hourly/two-hour latency gap; it does not prove profitability. Scores and thresholds need forward testing with every alert and subsequent maximum favorable/adverse excursion recorded before any auto-trading discussion. Public APIs and RPCs have rate and indexing delays.
 
-The repository currently declares a free Render web service. A sleeping web service cannot maintain a 30–60 second cadence; production activation requires an always-on service and durable storage. The scanner therefore defaults to disabled until the operator deliberately enables it after those deployment choices are in place.
+The free deployment uses a five-minute scan and two ten-minute health checks (one internal and one scheduled through GitHub Actions) to remain below Render's 15-minute idle timeout. The public repository's standard GitHub-hosted Actions do not consume paid minutes. Scheduled Actions can be delayed, which is why the internal check is retained as the primary keep-awake path.
+
+Free Render storage remains ephemeral. After a restart the scanner restores recent candidates from launch feeds and a 1,800-block RPC lookback, warms up for one cycle, and then resumes. Alert history from before the restart is not permanent, so an unusually timed restart can still cause a repeated alert later. Permanent deduplication would require an external durable datastore.
 
 Social quality is limited to market metadata unless `SCANNER_SIGNAL_OVERLAY_URL` is connected to an X/social listener. Smart-wallet quality depends entirely on the public wallet list supplied by the operator. These are explicit inputs, not hidden heuristics.

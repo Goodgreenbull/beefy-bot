@@ -5,3 +5,15 @@ services:
     plan: free
     buildCommand: pip install -r requirements.txt
     startCommand: hypercorn server:app --bind 0.0.0.0:$PORT
+    healthCheckPath: /health
+    envVars:
+      - key: SCANNER_ENABLED
+        value: "true"
+      - key: SCANNER_INTERVAL_SECONDS
+        value: "300"
+      - key: SCANNER_ACTIVE_LIMIT
+        value: "30"
+      - key: SCANNER_MAX_ALERTS_PER_CYCLE
+        value: "3"
+      - key: SCANNER_WARMUP_CYCLES
+        value: "1"

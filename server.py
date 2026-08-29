@@ -287,7 +287,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🐂💚 *Good Green Bull*\n\nBuilt on Base. Built for builders.\nThe bull that doesn't stop.\n\nChoose an option below 👇", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("📜 *GGB Bot Commands*\n\n🐂 *Community*\n/gm — Say GM to the herd\n/bull — Random Beefy quote\n/leaderboard — Top GM senders today\n/streaks — Top GM streak holders\n/herd — Community stats\n/about — What is GGB?\n\n📈 *Alpha Discovery*\n/trending — Top trending tokens on Base\n/lookup `<token>` — Deep dive any token\n\n🗳️ *Engagement*\n/poll `<question>` — Create a Yes/No poll\n\n👤 *Admin only*\n/daily — Trigger daily post\n/revival — Relaunch announcement\n/broadcast `<msg>` — Message the group\n/settings — Admin panel\n\n/help — Show this list", parse_mode="Markdown")
+    await update.message.reply_text("📜 *GGB Bot Commands*\n\n🐂 *Community*\n/gm — Say GM to the herd\n/bull — Random Beefy quote\n/leaderboard — Top GM senders today\n/streaks — Top GM streak holders\n/herd — Community stats\n/about — What is GGB?\n\n📈 *Alpha Discovery*\n/trending — Top trending tokens on Base\n/lookup `<token>` — Deep dive any token\n\n🗳️ *Engagement*\n/poll `<question>` — Create a Yes/No poll\n\n👤 *Admin only*\n/scannerstatus — Scanner and feed health\n/scannow — Run a scan immediately\n/daily — Trigger daily post\n/revival — Relaunch announcement\n/broadcast `<msg>` — Message the group\n/settings — Admin panel\n\n/help — Show this list", parse_mode="Markdown")
 
 async def about_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🐂💚 *What is Good Green Bull?*\n\nGGB is a builder community on Base chain.\n\nWe track trending tokens, share alpha, and support each other in building projects that actually last.\n\nBeefy Bot is the group's engine — it posts daily content, scans Base for trending tokens, alerts the group to volume breakouts, and keeps the herd engaged.\n\nNo hype. No empty promises.\nJust builders who ship.\n\n🌐 goodgreenbull.com\n🕊️ https://x.com/BeefytheBull\n📣 https://t.me/goodgreenbull\n\nHerd strong. We move. 🐂💚", parse_mode="Markdown")
@@ -442,6 +442,7 @@ async def scannerstatus_command(update: Update, context: ContextTypes.DEFAULT_TY
     health_line = "All feeds healthy" if not unhealthy else f"Needs attention: {', '.join(unhealthy)}"
     await update.message.reply_text(
         "🔎 First-Leg Scanner\n\n"
+        f"Cadence: every {scanner_config.interval_seconds // 60} minute(s)\n"
         f"Last cycle: {last_cycle}\n"
         f"Candidates (24h): {status.get('candidates_24h', 0)}\n"
         f"Snapshots (24h): {status.get('snapshots_24h', 0)}\n"
@@ -476,6 +477,18 @@ async def send_first_leg_alert(
         parse_mode="HTML",
         disable_web_page_preview=True,
     )
+
+
+async def keep_render_awake():
+    """Generate one inbound health request before Render's free idle timeout."""
+    try:
+        timeout = aiohttp.ClientTimeout(total=90)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.get(f"{WEBHOOK_BASE_URL}/health") as response:
+                if response.status >= 400:
+                    print(f"⚠️ Keep-awake health check returned HTTP {response.status}")
+    except Exception as error:
+        print(f"⚠️ Keep-awake health check failed: {type(error).__name__}")
 
 # === SCHEDULED POSTS ===
 
@@ -744,6 +757,14 @@ async def on_startup():
     scheduler.add_job(send_discussion_topic, "cron", hour=12, minute=0)
     scheduler.add_job(send_weekly_engagement, "cron", day_of_week="mon", hour=9, minute=0)
     scheduler.add_job(check_milestones, "interval", hours=1)
+    scheduler.add_job(
+        keep_render_awake,
+        "interval",
+        minutes=10,
+        max_instances=1,
+        coalesce=True,
+        jitter=20,
+    )
     if scanner_config.enabled:
         scanner_state = SQLiteState(scanner_config.state_db)
         scanner_service = ScannerService(scanner_config, scanner_state, send_first_leg_alert)
@@ -759,7 +780,7 @@ async def on_startup():
         asyncio.create_task(scanner_service.run_cycle())
     scheduler.start()
     print(
-        f"✅ Scheduler: community posts + first-leg scanner "
+        f"✅ Scheduler: community posts + free-tier keep-awake + first-leg scanner "
         f"({'every ' + str(scanner_config.interval_seconds) + 's' if scanner_config.enabled else 'disabled'})"
     )
     print("🐂 Beefy Bot v3 — Alerts only — LIVE")

@@ -39,7 +39,7 @@ class FakeEnricher:
 class ScannerServiceTests(unittest.IsolatedAsyncioTestCase):
     async def test_cycle_scores_alerts_and_deduplicates_without_trading(self):
         state = SQLiteState(":memory:")
-        config = ScannerConfig(active_candidate_limit=5, min_alert_score=60)
+        config = ScannerConfig(active_candidate_limit=5, min_alert_score=60, warmup_cycles=0)
         alerts = []
 
         async def capture(candidate, market, score):

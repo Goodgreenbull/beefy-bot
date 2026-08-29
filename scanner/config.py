@@ -47,16 +47,18 @@ def _json_map(name: str) -> dict:
 
 @dataclass(slots=True)
 class ScannerConfig:
-    enabled: bool = False
-    interval_seconds: int = 45
+    enabled: bool = True
+    interval_seconds: int = 300
     state_db: str = "scanner_state.sqlite3"
     alert_chat_id: str | None = None
     min_alert_score: float = 68.0
     strong_alert_score: float = 80.0
     alert_cooldown_minutes: int = 45
     alert_score_upgrade: float = 10.0
-    active_candidate_limit: int = 60
+    active_candidate_limit: int = 30
     active_max_age_hours: int = 720
+    max_alerts_per_cycle: int = 3
+    warmup_cycles: int = 1
     min_liquidity_usd: float = 3_000.0
     max_market_cap_usd: float = 5_000_000.0
     late_price_change_5m: float = 90.0
@@ -66,7 +68,7 @@ class ScannerConfig:
     gecko_networks: tuple[str, ...] = ("base",)
     base_rpc_url: str = "https://mainnet.base.org"
     robinhood_rpc_url: str = "https://rpc.mainnet.chain.robinhood.com"
-    rpc_lookback_blocks: int = 180
+    rpc_lookback_blocks: int = 1_800
     rpc_max_block_span: int = 1_800
     http_timeout_seconds: int = 12
     dex_concurrency: int = 6
@@ -76,7 +78,7 @@ class ScannerConfig:
 
     @classmethod
     def from_env(cls) -> "ScannerConfig":
-        interval = max(30, min(60, _int("SCANNER_INTERVAL_SECONDS", 45)))
+        interval = max(60, min(600, _int("SCANNER_INTERVAL_SECONDS", 300)))
         raw_quotes = _json_map("SCANNER_QUOTE_TOKENS_JSON")
         quote_tokens: dict[str, set[str]] = {"base": set(BASE_QUOTES)}
         for chain, addresses in raw_quotes.items():
@@ -84,16 +86,22 @@ class ScannerConfig:
                 quote_tokens[str(chain).lower()] = {str(address).lower() for address in addresses}
 
         return cls(
-            enabled=_bool("SCANNER_ENABLED", False),
+            enabled=_bool("SCANNER_ENABLED", True),
             interval_seconds=interval,
             state_db=os.getenv("SCANNER_STATE_DB", "scanner_state.sqlite3"),
-            alert_chat_id=os.getenv("SIGNAL_TELEGRAM_CHAT_ID") or os.getenv("TELEGRAM_GROUP_ID"),
+            alert_chat_id=(
+                os.getenv("SIGNAL_TELEGRAM_CHAT_ID")
+                or os.getenv("TELEGRAM_GROUP_ID")
+                or os.getenv("ADMIN_CHAT_ID")
+            ),
             min_alert_score=_float("SCANNER_MIN_ALERT_SCORE", 68.0),
             strong_alert_score=_float("SCANNER_STRONG_ALERT_SCORE", 80.0),
             alert_cooldown_minutes=_int("SCANNER_ALERT_COOLDOWN_MINUTES", 45),
             alert_score_upgrade=_float("SCANNER_ALERT_SCORE_UPGRADE", 10.0),
-            active_candidate_limit=_int("SCANNER_ACTIVE_LIMIT", 60),
+            active_candidate_limit=_int("SCANNER_ACTIVE_LIMIT", 30),
             active_max_age_hours=_int("SCANNER_ACTIVE_MAX_AGE_HOURS", 720),
+            max_alerts_per_cycle=max(1, _int("SCANNER_MAX_ALERTS_PER_CYCLE", 3)),
+            warmup_cycles=max(0, _int("SCANNER_WARMUP_CYCLES", 1)),
             min_liquidity_usd=_float("SCANNER_MIN_LIQUIDITY_USD", 3_000.0),
             max_market_cap_usd=_float("SCANNER_MAX_MARKET_CAP_USD", 5_000_000.0),
             late_price_change_5m=_float("SCANNER_LATE_5M_PCT", 90.0),
@@ -103,7 +111,7 @@ class ScannerConfig:
             gecko_networks=_csv("GECKOTERMINAL_NETWORKS", "base"),
             base_rpc_url=os.getenv("BASE_RPC_URL", "https://mainnet.base.org"),
             robinhood_rpc_url=os.getenv("ROBINHOOD_RPC_URL", "https://rpc.mainnet.chain.robinhood.com"),
-            rpc_lookback_blocks=_int("SCANNER_RPC_LOOKBACK_BLOCKS", 180),
+            rpc_lookback_blocks=_int("SCANNER_RPC_LOOKBACK_BLOCKS", 1_800),
             rpc_max_block_span=_int("SCANNER_RPC_MAX_BLOCK_SPAN", 1_800),
             http_timeout_seconds=_int("SCANNER_HTTP_TIMEOUT_SECONDS", 12),
             dex_concurrency=_int("SCANNER_DEX_CONCURRENCY", 6),
