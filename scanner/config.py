@@ -55,7 +55,7 @@ class ScannerConfig:
     strong_alert_score: float = 80.0
     alert_cooldown_minutes: int = 45
     alert_score_upgrade: float = 10.0
-    active_candidate_limit: int = 30
+    active_candidate_limit: int = 50
     active_max_age_hours: int = 720
     max_alerts_per_cycle: int = 3
     warmup_cycles: int = 1
@@ -91,14 +91,14 @@ class ScannerConfig:
             state_db=os.getenv("SCANNER_STATE_DB", "scanner_state.sqlite3"),
             alert_chat_id=(
                 os.getenv("SIGNAL_TELEGRAM_CHAT_ID")
-                or os.getenv("TELEGRAM_GROUP_ID")
                 or os.getenv("ADMIN_CHAT_ID")
+                or os.getenv("TELEGRAM_GROUP_ID")
             ),
             min_alert_score=_float("SCANNER_MIN_ALERT_SCORE", 68.0),
             strong_alert_score=_float("SCANNER_STRONG_ALERT_SCORE", 80.0),
             alert_cooldown_minutes=_int("SCANNER_ALERT_COOLDOWN_MINUTES", 45),
             alert_score_upgrade=_float("SCANNER_ALERT_SCORE_UPGRADE", 10.0),
-            active_candidate_limit=_int("SCANNER_ACTIVE_LIMIT", 30),
+            active_candidate_limit=_int("SCANNER_ACTIVE_LIMIT", 50),
             active_max_age_hours=_int("SCANNER_ACTIVE_MAX_AGE_HOURS", 720),
             max_alerts_per_cycle=max(1, _int("SCANNER_MAX_ALERTS_PER_CYCLE", 3)),
             warmup_cycles=max(0, _int("SCANNER_WARMUP_CYCLES", 1)),

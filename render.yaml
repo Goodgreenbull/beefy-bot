@@ -12,7 +12,7 @@ services:
       - key: SCANNER_INTERVAL_SECONDS
         value: "300"
       - key: SCANNER_ACTIVE_LIMIT
-        value: "30"
+        value: "50"
       - key: SCANNER_MAX_ALERTS_PER_CYCLE
         value: "3"
       - key: SCANNER_WARMUP_CYCLES

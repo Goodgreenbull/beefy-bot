@@ -27,22 +27,29 @@ def format_alert(candidate: Candidate, snapshot: MarketSnapshot, result: ScoreRe
     chain = html.escape(candidate.chain.upper())
     source = html.escape(candidate.source.split(",")[0])
     drivers = "; ".join(html.escape(item) for item in result.drivers[:3]) or "awaiting more confirmation"
+    if result.signal == "STRONG WATCH":
+        verdict = "🐂 <b>Beefy Call: BUY</b>"
+        analysis = f"Strong qualifying flow: {drivers}."
+    else:
+        verdict = "👀 <b>Beefy Verdict: WATCH FOR NOW</b>"
+        analysis = f"Promising early flow, but conviction is not high enough yet: {drivers}."
     address = html.escape(candidate.token_address)
     chart = candidate.chart_url or snapshot.raw.get("url")
 
     lines = [
         f"🚨 <b>{chain} · {html.escape(result.stage)} · {result.score:.0f}/100</b>",
-        f"<b>{name} (${symbol}) — {html.escape(result.signal)}</b>",
+        f"<b>{name} (${symbol})</b>",
+        verdict,
+        analysis,
         "",
         f"Age {age} · MC {_money(market_cap)} · Liq {_money(snapshot.liquidity_usd)}",
         f"5m vol {_money(snapshot.volume_5m_usd)} ({churn:.2f}x liq) · {snapshot.buys_5m}B/{snapshot.sells_5m}S",
         f"5m {snapshot.price_change_5m:+.1f}% · 1h {snapshot.price_change_1h:+.1f}% · via {source}",
         "",
-        f"<b>Why:</b> {drivers}",
         f"<b>Invalidation:</b> {html.escape(result.invalidation)}",
-        f"<code>{address}</code>",
+        f"<b>CA:</b> <code>{address}</code>",
     ]
     if chart:
         lines.append(f'<a href="{html.escape(str(chart), quote=True)}">Open chart</a>')
-    lines.extend(["", "Alerts only · no auto-trading · DYOR"])
+    lines.extend(["", "High-risk microcap · alerts only · no auto-trading · DYOR"])
     return "\n".join(lines)

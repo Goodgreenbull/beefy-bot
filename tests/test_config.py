@@ -11,7 +11,7 @@ class ScannerConfigTests(unittest.TestCase):
             config = ScannerConfig.from_env()
         self.assertTrue(config.enabled)
         self.assertEqual(config.interval_seconds, 300)
-        self.assertEqual(config.active_candidate_limit, 30)
+        self.assertEqual(config.active_candidate_limit, 50)
         self.assertEqual(config.alert_chat_id, "12345")
         self.assertEqual(config.max_alerts_per_cycle, 3)
         self.assertEqual(config.warmup_cycles, 1)
@@ -27,3 +27,9 @@ class ScannerConfigTests(unittest.TestCase):
             config = ScannerConfig.from_env()
         self.assertEqual(config.alert_chat_id, "signal-chat")
         self.assertEqual(config.interval_seconds, 600)
+
+    def test_private_admin_chat_wins_over_group_for_alerts(self):
+        values = {"TELEGRAM_GROUP_ID": "group-chat", "ADMIN_CHAT_ID": "admin-chat"}
+        with patch.dict(os.environ, values, clear=True):
+            config = ScannerConfig.from_env()
+        self.assertEqual(config.alert_chat_id, "admin-chat")

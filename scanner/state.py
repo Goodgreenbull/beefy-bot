@@ -161,15 +161,45 @@ class SQLiteState:
 
     def list_active_candidates(self, max_age_hours: int, limit: int) -> list[Candidate]:
         cutoff = (datetime.now(timezone.utc) - timedelta(hours=max_age_hours)).isoformat()
-        rows = self.connection.execute(
+        fresh_limit = max(1, min(limit, int(limit * 0.7)))
+        recheck_limit = max(0, limit - fresh_limit)
+        fresh_rows = self.connection.execute(
             """
             SELECT * FROM candidates
             WHERE COALESCE(launch_at, first_seen_at) >= ?
             ORDER BY COALESCE(launch_at, first_seen_at) DESC
             LIMIT ?
             """,
-            (cutoff, limit),
+            (cutoff, fresh_limit),
         ).fetchall()
+        rows = list(fresh_rows)
+        if recheck_limit:
+            selected = [row["candidate_key"] for row in fresh_rows]
+            exclusion = ""
+            parameters: list[Any] = [cutoff]
+            if selected:
+                placeholders = ",".join("?" for _ in selected)
+                exclusion = f"AND c.candidate_key NOT IN ({placeholders})"
+                parameters.extend(selected)
+            parameters.append(recheck_limit)
+            recheck_rows = self.connection.execute(
+                f"""
+                SELECT c.*, MAX(s.captured_at) AS last_snapshot_at
+                FROM candidates c
+                LEFT JOIN snapshots s ON s.candidate_key = c.candidate_key
+                WHERE COALESCE(c.launch_at, c.first_seen_at) >= ?
+                {exclusion}
+                GROUP BY c.candidate_key
+                ORDER BY
+                    CASE WHEN MAX(s.captured_at) IS NULL THEN 0 ELSE 1 END,
+                    MAX(s.captured_at) ASC,
+                    COALESCE(c.last_score, 0) DESC,
+                    COALESCE(c.launch_at, c.first_seen_at) DESC
+                LIMIT ?
+                """,
+                parameters,
+            ).fetchall()
+            rows.extend(recheck_rows)
         return [
             Candidate(
                 chain=row["chain"],

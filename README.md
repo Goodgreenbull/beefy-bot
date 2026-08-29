@@ -32,8 +32,8 @@ The old scheduled daily alpha report and two-hour breakout alert are no longer s
 The scanner reuses the credentials already stored in Render. It sends to the first available destination in this order:
 
 1. `SIGNAL_TELEGRAM_CHAT_ID` when an explicit signal chat is configured.
-2. The existing `TELEGRAM_GROUP_ID`.
-3. The existing `ADMIN_CHAT_ID` private conversation.
+2. The existing `ADMIN_CHAT_ID` private conversation.
+3. The existing `TELEGRAM_GROUP_ID`.
 
 No Telegram token or chat ID is copied into GitHub. A normal deployment only needs the existing values:
 
@@ -51,7 +51,7 @@ Render sleeps a free web service after 15 minutes without inbound traffic. This 
 - Beefy Bot calls its own public `/health` endpoint every ten minutes.
 - `.github/workflows/keep-render-awake.yml` calls the same endpoint every ten minutes from GitHub Actions. The repository is public, so standard GitHub-hosted Actions are free. Scheduled workflows only begin after this workflow is on the default branch.
 
-The scanner defaults to a five-minute cadence, enriches at most 30 active candidates, and sends at most three alerts per cycle. This is much lighter than the 45-second profile and reduces the chance of Render suspending the free service for unusually high outbound API traffic.
+The scanner defaults to a five-minute cadence, enriches at most 50 active candidates, and sends at most three alerts per cycle. Seventy percent of each cycle is reserved for the newest candidates and thirty percent rotates through older candidates so reawakenings are not starved by new launches.
 
 Render can still restart a free service at any time and its local filesystem is ephemeral. On a fresh state database, Beefy Bot suppresses the first alert cycle, rebuilds candidates from the direct feeds and a 1,800-block RPC lookback, then resumes alerts. This is a recovery strategy rather than permanent storage, but it avoids introducing a paid database.
 

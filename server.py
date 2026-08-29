@@ -524,7 +524,9 @@ async def send_first_leg_alert(
     candidate: Candidate, snapshot: MarketSnapshot, result: ScoreResult
 ):
     if not scanner_config.alert_chat_id:
-        raise RuntimeError("SIGNAL_TELEGRAM_CHAT_ID or TELEGRAM_GROUP_ID is not set")
+        raise RuntimeError(
+            "SIGNAL_TELEGRAM_CHAT_ID, ADMIN_CHAT_ID, or TELEGRAM_GROUP_ID is not set"
+        )
     await application.bot.send_message(
         chat_id=telegram_chat_target(scanner_config.alert_chat_id),
         text=format_alert(candidate, snapshot, result),
@@ -803,7 +805,7 @@ register_handlers()
 
 @app.before_serving
 async def on_startup():
-    global scanner_service
+    global scanner_service, scanner_state
     await application.initialize()
     await application.bot.set_webhook(url=WEBHOOK_URL)
     print("✅ Telegram webhook configured")

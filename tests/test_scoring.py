@@ -82,3 +82,19 @@ class SignalScorerTests(unittest.TestCase):
         result = self.scorer.score(candidate, snapshot(liquidity_usd=500), [], now=NOW)
         self.assertFalse(result.eligible)
         self.assertTrue(any("liquidity" in item for item in result.blockers))
+
+    def test_buy_tier_requires_strong_trade_quality(self):
+        candidate = Candidate(
+            chain="base",
+            token_address=TOKEN,
+            source="bankr",
+            launch_at=NOW - timedelta(minutes=10),
+        )
+        result = self.scorer.score(
+            candidate,
+            snapshot(buys_5m=4, sells_5m=0, social_velocity=8, smart_wallet_buys=5),
+            [],
+            now=NOW,
+        )
+        self.assertTrue(result.eligible)
+        self.assertEqual(result.signal, "EARLY WATCH")

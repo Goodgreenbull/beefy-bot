@@ -26,5 +26,20 @@ class AlertFormatTests(unittest.TestCase):
         message = format_alert(candidate, market, result)
         self.assertIn("A&amp;B", message)
         self.assertIn("T&lt;ST", message)
+        self.assertIn("Beefy Call: BUY", message)
+        self.assertIn("<b>CA:</b>", message)
         self.assertIn("no auto-trading", message)
         self.assertLess(len(message), 1_000)
+
+    def test_early_watch_uses_watch_verdict(self):
+        candidate = Candidate(
+            chain="base",
+            token_address="0x9999999999999999999999999999999999999999",
+            source="geckoterminal:base",
+            symbol="WAIT",
+        )
+        market = MarketSnapshot(chain="base", token_address=candidate.token_address)
+        result = ScoreResult(72, "IGNITION", "EARLY WATCH", True, 0, {}, ["fresh"], [], "flow fails")
+        message = format_alert(candidate, market, result)
+        self.assertIn("Beefy Verdict: WATCH FOR NOW", message)
+        self.assertNotIn("Beefy Call: BUY", message)

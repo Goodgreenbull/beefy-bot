@@ -1,5 +1,5 @@
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from scanner.models import Candidate, MarketSnapshot, ScoreResult
 from scanner.state import SQLiteState
@@ -57,3 +57,35 @@ class SQLiteStateTests(unittest.TestCase):
         self.state.mark_feed_success("feed", 3)
         self.assertEqual(self.state.get_cursor("feed"), "42")
         self.assertEqual(self.state.health()[0]["items_seen"], 3)
+
+    def test_active_candidates_balance_fresh_and_rotating_rechecks(self):
+        self.state.connection.execute("DELETE FROM candidates")
+        self.state.connection.commit()
+        now = datetime.now(timezone.utc)
+        keys = []
+        for index in range(8):
+            candidate = Candidate(
+                chain="base",
+                token_address=f"0x{index + 10:040x}",
+                source="rpc-pairs:base:v2",
+                discovered_at=now - timedelta(minutes=index + 1),
+                launch_at=now - timedelta(minutes=index + 1),
+            )
+            self.state.upsert_candidate(candidate)
+            keys.append(candidate.key)
+            if index >= 4:
+                self.state.add_snapshot(
+                    candidate.key,
+                    MarketSnapshot(
+                        chain="base",
+                        token_address=candidate.token_address,
+                        captured_at=now - timedelta(minutes=20 - index),
+                    ),
+                )
+
+        active = self.state.list_active_candidates(24, 6)
+        active_keys = {candidate.key for candidate in active}
+        self.assertEqual(len(active), 6)
+        self.assertTrue(set(keys[:4]).issubset(active_keys))
+        self.assertIn(keys[4], active_keys)
+        self.assertIn(keys[5], active_keys)

@@ -123,7 +123,14 @@ class SignalScorer:
         hard_late = anti_late_penalty >= 35.0
         basic_quality = snapshot.liquidity_usd >= self.config.min_liquidity_usd and txns_5m >= 4
         eligible = final_score >= self.config.min_alert_score and basic_quality and not hard_late
-        if eligible and final_score >= self.config.strong_alert_score:
+        strong_quality = (
+            txns_5m >= 12
+            and buy_ratio >= 0.58
+            and snapshot.liquidity_usd >= max(self.config.min_liquidity_usd, 5_000.0)
+            and market_cap is not None
+            and snapshot.price_change_5m <= 45
+        )
+        if eligible and final_score >= self.config.strong_alert_score and strong_quality:
             signal = "STRONG WATCH"
         elif eligible:
             signal = "EARLY WATCH"
