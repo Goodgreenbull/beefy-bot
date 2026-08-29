@@ -1,193 +1,93 @@
-# 🐂 GGB Beefy Bot
+# Beefy Bot v3
 
-**Good Green Bull — Telegram Bot**  
-Built on Base. Built for builders.
+Beefy Bot remains the Good Green Bull Telegram community bot and now includes an opt-in, alerts-only first-leg scanner for Base and Robinhood Chain.
 
----
+It does **not** hold a wallet, sign transactions, or auto-trade. The scanner produces watch alerts for human review.
 
-## What This Bot Does
+## What changed
 
-Beefy Bot is the automated engine behind the GGB Telegram community. It runs 24/7 on Render and handles:
+The previous alpha job sampled promoted/trending tokens and compared 24-hour volume every two hours. That was too late for first-leg discovery and lost all state on restart.
 
-- **Daily GM post** — fires every morning at 08:00 UTC with a Beefy quote, live $GGB price, and a community prompt
-- **Weekly builder question** — every Monday at 09:00 UTC, a rotating engagement question goes out to the group
-- **GM tracker + leaderboard** — tracks who says GM each day and shows a daily leaderboard
-- **New member welcome** — automatically greets anyone who joins the group
-- **Spam protection** — mutes users who send more than 5 messages in 10 seconds
-- **Live price + wallet checks** — pulls real-time $GGB data from DexScreener and BaseScan
-- **Admin controls** — revival blast, manual daily trigger, settings panel
+The new scanner runs every 30–60 seconds and separates the job into:
 
----
+1. Direct discovery from Bankr, Flaunch, GeckoTerminal new pools, and standard V2/V3 pool-creation events on Base and Robinhood Chain.
+2. Durable SQLite state for candidates, rolling market snapshots, feed cursors, scores, feed health, and sent-alert deduplication.
+3. DexScreener market enrichment plus optional social and smart-wallet overlays.
+4. Transparent ignition/reawakening scoring with an anti-late gate.
+5. Concise Telegram alerts with score, stage, age, liquidity, market cap, 5-minute flow, drivers, and invalidation.
 
-## Commands
+The old scheduled daily alpha report and two-hour breakout alert are no longer scheduled, so there is one automated signal path. `/trending` and `/lookup` remain available as manual research tools.
 
-| Command | Who | What it does |
-|---|---|---|
-| `/start` | Everyone | Opens the main menu with inline buttons |
-| `/help` | Everyone | Lists all commands |
-| `/price` | Everyone | Live $GGB price + 24h change |
-| `/bull` | Everyone | Random Beefy motivational quote |
-| `/gm` | Everyone | Say GM to the herd, gets logged on leaderboard |
-| `/leaderboard` | Everyone | Top GM senders today |
-| `/wallet <address>` | Everyone | Check a Base wallet's GGB balance + USD value |
-| `/token` | Everyone | Full token info + contract address |
-| `/kit` | Everyone | GGB Builder Kit info + purchase link |
-| `/nft` | Everyone | Beefy Prime Series One info |
-| `/herd` | Everyone | Group member count + community status |
-| `/daily` | Admin only | Manually trigger the Beefy Daily post |
-| `/revival` | Admin only | Send the relaunch announcement to the group |
-| `/settings` | Admin only | Admin settings panel |
+## Safety boundaries
 
----
+- Alerts only: there is no order execution code in the scanner.
+- No private key, seed phrase, or wallet credential is read by the scanner.
+- Telegram and provider credentials are read only from environment variables.
+- The Telegram token is no longer embedded in startup logs or used directly as the visible webhook path.
+- `.env`, SQLite state, and local databases are excluded from Git.
+- Smart-wallet configuration accepts public addresses only.
 
-## File Structure
+## Enable on Render
 
-```
-/
-├── server.py          # Main bot — all logic lives here
-├── requirements.txt   # Python dependencies
-├── render.yaml        # Render deployment config
-└── README.md          # This file
+Copy the names from `.env.example` into Render's Environment page. At minimum set:
+
+```text
+BOT_TOKEN=<Telegram BotFather token>
+TELEGRAM_GROUP_ID=<community group id>
+SIGNAL_TELEGRAM_CHAT_ID=<private signal chat or group id>
+SCANNER_ENABLED=true
+SCANNER_INTERVAL_SECONDS=45
 ```
 
-> `bot.py` is an older lightweight version kept for reference. It is not used in deployment.
+For reliable 24/7 use, set `BASE_RPC_URL` and `ROBINHOOD_RPC_URL` to production provider endpoints. The public endpoints are useful for development but are rate limited. Use a persistent Render disk and set `SCANNER_STATE_DB=/var/data/scanner_state.sqlite3`; otherwise state survives process restarts but not a fresh ephemeral deployment.
 
----
+Render's free web service can sleep between requests, so it cannot guarantee a 30–60 second scanner. Keep this feature branch in dry-run/disabled mode until the service is moved to an always-on plan (or another always-on host) and persistent storage is attached.
 
-## Environment Variables
+No wallet key is needed or wanted.
 
-Set these in your Render dashboard under **Environment** — never hardcode them in the code.
+## Scanner controls
 
-| Variable | Required | Description |
-|---|---|---|
-| `BOT_TOKEN` | ✅ Yes | Your Telegram bot token from @BotFather |
-| `BASESCAN_API_KEY` | ✅ Yes | Free API key from basescan.org |
-| `ADMIN_USERNAME` | ✅ Yes | Your Telegram username without @ e.g. `JS0nbase` |
-| `TELEGRAM_GROUP_ID` | ✅ Yes | Numeric ID of your GGB Telegram group e.g. `-1001234567890` |
+Admin-only Telegram commands:
 
-### How to get your Telegram Group ID
+- `/scannerstatus` — last cycle, 24-hour candidates/snapshots/alerts, and feed health.
+- `/scannow` — run one cycle immediately.
 
-1. Add [@userinfobot](https://t.me/userinfobot) to your Telegram group
-2. Send `/start` in the group
-3. The bot will reply with the group's numeric ID (it will start with `-100`)
-4. Copy that number and add it to Render as `TELEGRAM_GROUP_ID`
+Existing community commands and moderation remain in `server.py`.
 
-### How to get a BaseScan API key
+## Optional signal inputs
 
-1. Go to [basescan.org](https://basescan.org)
-2. Create a free account
-3. Go to API Keys in your profile
-4. Generate a key and copy it into Render
+### Curated smart wallets
 
----
+Set `SCANNER_SMART_WALLETS` to comma-separated public addresses. The scanner counts ERC-20 transfers into and out of those wallets for active candidates on Base and Robinhood Chain.
 
-## Deployment on Render
+### Social/smart-wallet overlay
 
-### First-time setup
+`SCANNER_SIGNAL_OVERLAY_URL` may point to a JSON endpoint with this contract:
 
-1. Push this repo to GitHub
-2. Go to [render.com](https://render.com) and sign in
-3. Click **New → Web Service**
-4. Connect your GitHub repo
-5. Render will detect `render.yaml` automatically — the settings will populate
-6. Add all four environment variables listed above
-7. Click **Deploy**
-
-### Redeploying after changes
-
-```bash
-# Make your changes locally, then:
-git add .
-git commit -m "Your update message"
-git push origin main
+```json
+{
+  "signals": [
+    {
+      "chain": "base",
+      "tokenAddress": "0x...",
+      "socialVelocity": 2.4,
+      "socialLinks": 3,
+      "smartWalletBuys": 2,
+      "smartWalletSells": 0,
+      "smartWalletNetUsd": 1800
+    }
+  ]
+}
 ```
 
-Render will detect the push and redeploy automatically if auto-deploy is enabled. Otherwise, go to your Render dashboard and click **Manual Deploy → Deploy latest commit**.
+This lets an X/listening service or wallet analytics provider contribute signals without coupling Beefy Bot to one vendor.
 
-### Checking logs
+## Local verification
 
-In your Render dashboard, click your service → **Logs**. You should see:
-```
-✅ Webhook set: https://beefy-bot.onrender.com/webhook/...
-✅ Scheduler running — Daily 08:00 UTC | Monday 09:00 UTC
-```
-
-If you see errors, check that all four environment variables are set correctly.
-
----
-
-## Scheduled Posts
-
-| Post | Schedule | Description |
-|---|---|---|
-| Beefy Daily | Every day at 08:00 UTC | GM message, Beefy quote, live price, community prompt |
-| Builder Monday | Every Monday at 09:00 UTC | Rotating weekly engagement question |
-
-To change the schedule, edit the `on_startup()` function in `server.py`:
-
-```python
-scheduler.add_job(send_beefy_daily, "cron", hour=8, minute=0)
-# Change hour=8 to any UTC hour you prefer
+```text
+python -m compileall server.py scanner tests
+python -m unittest discover -s tests -v
+python -m scanner --state scanner_dry_run.sqlite3 --limit 5
 ```
 
----
-
-## Revival Flow
-
-When returning after a period of inactivity, use this sequence:
-
-1. Deploy the latest bot code to Render
-2. Confirm the bot is live (check Render logs)
-3. In Telegram, send `/revival` as the admin — this fires the relaunch announcement to the group
-4. Post the revival content on X and Farcaster
-5. The Beefy Daily scheduler takes over from there — group gets a fresh post every morning automatically
-
----
-
-## Local Development (Optional)
-
-If you want to test changes locally before pushing:
-
-```bash
-# Install dependencies
-pip install -r requirements.txt
-
-# Set environment variables (Mac/Linux)
-export BOT_TOKEN=your_token_here
-export BASESCAN_API_KEY=your_key_here
-export ADMIN_USERNAME=your_username
-export TELEGRAM_GROUP_ID=your_group_id
-
-# Run the bot
-python server.py
-```
-
-Note: For local testing, the webhook won't work since it points to the Render URL. Use polling mode for local testing if needed — ask Claude to add a `--local` flag if required.
-
----
-
-## Dependencies
-
-```
-Flask==3.1.0
-asgiref>=3.5.0
-python-telegram-bot[webhooks]==20.8
-requests==2.31.0
-httpx~=0.26.0
-aiohttp>=3.9.0
-APScheduler>=3.10.0
-```
-
----
-
-## Brand
-
-**Good Green Bull ($GGB)**  
-Chain: Base  
-Contract: `0xc2758c05916ba20b19358f1e96f597774e603050`  
-X: [@goodgreenbull](https://x.com/goodgreenbull)  
-Website: [goodgreenbull.com](https://goodgreenbull.com)
-
----
-
-*Built lean. Runs on Base. Powered by Beefy. 🐂💚*
+See `ARCHITECTURE.md` for scoring, deduplication, feed behavior, and known limitations.

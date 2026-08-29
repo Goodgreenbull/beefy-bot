@@ -4,6 +4,7 @@
 # =============================================================================
 
 import os
+import hashlib
 import asyncio
 import random
 import aiohttp
@@ -18,13 +19,20 @@ from telegram.ext import (
     MessageHandler, ChatMemberHandler, ContextTypes, filters
 )
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from scanner import ScannerConfig, ScannerService, SQLiteState
+from scanner.alerts import format_alert
+from scanner.models import Candidate, MarketSnapshot, ScoreResult
 
 TOKEN             = os.getenv("BOT_TOKEN")
 ADMIN_USERNAME    = os.getenv("ADMIN_USERNAME", "BeefytheBull")
 ADMIN_CHAT_ID     = os.getenv("ADMIN_CHAT_ID")
 TELEGRAM_GROUP_ID = os.getenv("TELEGRAM_GROUP_ID")
-WEBHOOK_PATH = f"/webhook/{TOKEN}"
-WEBHOOK_URL  = f"https://beefy-bot.onrender.com{WEBHOOK_PATH}"
+WEBHOOK_SECRET = os.getenv("TELEGRAM_WEBHOOK_SECRET") or hashlib.sha256(
+    (TOKEN or "unset").encode("utf-8")
+).hexdigest()[:32]
+WEBHOOK_PATH = f"/webhook/{WEBHOOK_SECRET}"
+WEBHOOK_BASE_URL = os.getenv("WEBHOOK_BASE_URL", "https://beefy-bot.onrender.com").rstrip("/")
+WEBHOOK_URL = f"{WEBHOOK_BASE_URL}{WEBHOOK_PATH}"
 
 app         = Quart(__name__)
 application = ApplicationBuilder().token(TOKEN).build()
@@ -39,6 +47,8 @@ last_milestone      = 0
 alerted_tokens      = set()
 poll_votes          = {}
 volume_snapshots    = {}
+scanner_config      = ScannerConfig.from_env()
+scanner_service     = None
 
 bull_quotes = [
     "The market rewards patience. The builder rewards himself. 🐂💚",
@@ -416,6 +426,57 @@ async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await update.message.reply_text(f"⚠️ Failed: {e}")
 
+
+async def scannerstatus_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update.effective_user):
+        await update.message.reply_text("⛔ Admin only.")
+        return
+    if not scanner_config.enabled or scanner_service is None:
+        await update.message.reply_text(
+            "⏸ First-Leg Scanner is disabled. Set SCANNER_ENABLED=true in Render to activate alerts."
+        )
+        return
+    status = scanner_service.status()
+    last_cycle = status.get("last_cycle_at") or "not run yet"
+    unhealthy = [item["feed_name"] for item in status.get("feeds", []) if item.get("last_error")]
+    health_line = "All feeds healthy" if not unhealthy else f"Needs attention: {', '.join(unhealthy)}"
+    await update.message.reply_text(
+        "🔎 First-Leg Scanner\n\n"
+        f"Last cycle: {last_cycle}\n"
+        f"Candidates (24h): {status.get('candidates_24h', 0)}\n"
+        f"Snapshots (24h): {status.get('snapshots_24h', 0)}\n"
+        f"Alerts (24h): {status.get('alerts_24h', 0)}\n"
+        f"{health_line}"
+    )
+
+
+async def scannow_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update.effective_user):
+        await update.message.reply_text("⛔ Admin only.")
+        return
+    if not scanner_config.enabled or scanner_service is None:
+        await update.message.reply_text("⏸ Scanner is disabled in the environment.")
+        return
+    await update.message.reply_text("🔎 Running a first-leg scan now…")
+    status = await scanner_service.run_cycle()
+    await update.message.reply_text(
+        f"✅ Scan complete: {status.get('discovered', 0)} feed hits, "
+        f"{status.get('enriched', 0)} scored, {status.get('alerts', 0)} alerts."
+    )
+
+
+async def send_first_leg_alert(
+    candidate: Candidate, snapshot: MarketSnapshot, result: ScoreResult
+):
+    if not scanner_config.alert_chat_id:
+        raise RuntimeError("SIGNAL_TELEGRAM_CHAT_ID or TELEGRAM_GROUP_ID is not set")
+    await application.bot.send_message(
+        chat_id=int(scanner_config.alert_chat_id),
+        text=format_alert(candidate, snapshot, result),
+        parse_mode="HTML",
+        disable_web_page_preview=True,
+    )
+
 # === SCHEDULED POSTS ===
 
 async def send_beefy_daily():
@@ -620,7 +681,20 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 @app.route("/", methods=["GET"])
 async def home():
-    return "🐂 Beefy Bot v2.1 — GGB Brand Engine + Alpha Discovery. Built on Base."
+    return "🐂 Beefy Bot v3 — Community + alerts-only First-Leg Scanner."
+
+
+@app.route("/health", methods=["GET"])
+async def health():
+    if scanner_service is None:
+        return {"bot": "ok", "scanner": "disabled"}
+    status = scanner_service.status()
+    return {
+        "bot": "ok",
+        "scanner": "running" if scanner_config.enabled else "disabled",
+        "last_cycle_at": status.get("last_cycle_at"),
+        "feeds_with_errors": status.get("errors", 0),
+    }
 
 @app.route(WEBHOOK_PATH, methods=["POST"])
 async def webhook():
@@ -647,6 +721,8 @@ def register_handlers():
     application.add_handler(CommandHandler("revival", revival_command))
     application.add_handler(CommandHandler("broadcast", broadcast_command))
     application.add_handler(CommandHandler("settings", settings))
+    application.add_handler(CommandHandler("scannerstatus", scannerstatus_command))
+    application.add_handler(CommandHandler("scannow", scannow_command))
     application.add_handler(CallbackQueryHandler(button))
     application.add_handler(ChatMemberHandler(welcome_new_member, ChatMemberHandler.CHAT_MEMBER))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_gm_text), group=1)
@@ -659,16 +735,38 @@ register_handlers()
 
 @app.before_serving
 async def on_startup():
+    global scanner_service
     await application.initialize()
     await application.bot.set_webhook(url=WEBHOOK_URL)
-    print(f"✅ Webhook set: {WEBHOOK_URL}")
+    print("✅ Telegram webhook configured")
     scheduler = AsyncIOScheduler(timezone="UTC")
     scheduler.add_job(send_beefy_daily, "cron", hour=8, minute=0)
     scheduler.add_job(send_discussion_topic, "cron", hour=12, minute=0)
-    scheduler.add_job(send_daily_alpha_report, "cron", hour=14, minute=0)
     scheduler.add_job(send_weekly_engagement, "cron", day_of_week="mon", hour=9, minute=0)
-    scheduler.add_job(check_breakout_volumes, "interval", hours=2)
     scheduler.add_job(check_milestones, "interval", hours=1)
+    if scanner_config.enabled:
+        scanner_state = SQLiteState(scanner_config.state_db)
+        scanner_service = ScannerService(scanner_config, scanner_state, send_first_leg_alert)
+        await scanner_service.start()
+        scheduler.add_job(
+            scanner_service.run_cycle,
+            "interval",
+            seconds=scanner_config.interval_seconds,
+            max_instances=1,
+            coalesce=True,
+            misfire_grace_time=scanner_config.interval_seconds,
+        )
+        asyncio.create_task(scanner_service.run_cycle())
     scheduler.start()
-    print("✅ Scheduler: Daily 08:00 | Discussion 12:00 | Alpha 14:00 | Monday 09:00 | Breakout 2h | Milestones 1h")
-    print("🐂 Beefy Bot v2.1 — Brand Engine + Alpha Discovery — LIVE")
+    print(
+        f"✅ Scheduler: community posts + first-leg scanner "
+        f"({'every ' + str(scanner_config.interval_seconds) + 's' if scanner_config.enabled else 'disabled'})"
+    )
+    print("🐂 Beefy Bot v3 — Alerts only — LIVE")
+
+
+@app.after_serving
+async def on_shutdown():
+    if scanner_service is not None:
+        await scanner_service.stop()
+    await application.shutdown()
