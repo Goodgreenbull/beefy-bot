@@ -28,7 +28,7 @@ Every external feed is isolated. One failing provider is recorded in `feed_healt
 - o1/B20: reads verified production `Launched` events from the Base and Robinhood factories, including Robinhood tokenized-stock launches.
 - DexScreener profiles: adds recently profiled Base/Robinhood tokens so non-standard launches are not solely dependent on pool indexing.
 - New pools: polls GeckoTerminal's per-network `new_pools` feed.
-- Base and Robinhood Chain: polls standard EVM logs for Uniswap-style V2 `PairCreated` and V3 `PoolCreated` event signatures. It does not require a guessed factory allowlist. Block cursors prevent gaps during normal restarts.
+- Base: polls standard V2 `PairCreated` and V3 `PoolCreated` events only from verified Uniswap and Sushi factory addresses. Robinhood's generic factory lane stays disabled until a first-party address is published; its verified o1 factories and public profile/index feeds remain active. Block cursors prevent gaps during normal restarts.
 
 Pools.fun is covered at the documented Sushi V3 pool-creation layer. The official Pools.fun contracts page does not currently publish its PartyFactory address. Likewise, the scanner does not ship a scraped BaseStonk factory address as if it were authoritative. `SCANNER_FACTORY_FEEDS_JSON` provides direct event ingestion as soon as a current factory/event is verified from a first-party source.
 
@@ -63,17 +63,17 @@ The 0–100 score is inspectable and uses:
 - direct-launch provenance and project identity;
 - contract safety, creator history, and holder concentration.
 
-The anti-late gate rejects or penalizes candidates that are already extended, above the configured microcap ceiling, dominated by sells, drawing down from a recent peak, or fading in both price and volume. The quality gate also requires a checked contract, project/social or proven-wallet evidence, minimum liquidity and transactions, and no hard honeypot/buy-sell restriction. Duplicate identities, serial deployers, excessive owner/creator concentration, prior creator honeypots, modifiable taxes, mint/pause/blacklist controls, and unverified source code reduce or block conviction.
+The anti-late gate rejects or penalizes candidates that are already extended, above the configured microcap ceiling, dominated by sells, drawing down from a recent peak, or fading in both price and volume. The quality gate also requires a positive USD price, conclusive admin checks, a successful Base sell simulation when the token did not come from a verified launch factory, project/social or proven-wallet evidence, minimum liquidity and transactions, and no hard honeypot/buy-sell restriction. Duplicate identities, serial deployers, excessive owner/creator concentration, prior creator honeypots, high buy/sell taxes, unlocked liquidity on untrusted launches, modifiable taxes, mint/pause/blacklist controls, and unverified source code reduce or block conviction.
 
 Outputs are `MONITOR`, `EARLY WATCH`, `STRONG WATCH`, or `AVOID LATE`. None of these outputs places an order.
 
 ## Forward outcomes and calibration
 
-Every sent alert stores its entry price, market cap, and liquidity. Alerted candidates stay in the active set until the first available observation after 15, 60, 360, and 1,440 minutes. Each observation updates the alert's best and worst sampled return (MFE/MAE). At a five-minute cadence these are observed excursions, not tick-perfect extrema.
+Every sent alert stores its entry price, market cap, and liquidity. Alerted candidates stay in the active set until the first available observation after 15, 60, 360, and 1,440 minutes. Each horizon stores the best and worst sampled return available at that point (MFE/MAE), rather than reusing the eventual 24-hour extrema. Materially late samples are retained but excluded from calibration. After three successful empty market lookups, a disappeared pool is recorded as a terminal -100% outcome; provider/network failures do not count as confirmations. At a five-minute cadence these are observed excursions, not tick-perfect extrema.
 
 WATCH and BUY begin at 74 and 84. Automatic calibration waits for at least 30 completed 24-hour samples, then searches only for thresholds supported by minimum sample sizes, win rate, median return, MFE, and MAE. It will not lower the conservative starting thresholds. This deliberately avoids retuning from the first bad $6k alert or one lucky winner.
 
-Early buyer addresses are resolved from transaction senders rather than router recipients. A wallet is promoted into the learned cohort only after repeated 24-hour results meet the configured observation, win-rate, and average-return floors.
+Early buyer addresses are resolved from transaction senders rather than router recipients. A wallet is promoted into the learned cohort only after results across distinct token contracts meet the configured observation, win-rate, and average-return floors.
 
 ## Operational limits
 

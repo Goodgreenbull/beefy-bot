@@ -16,6 +16,14 @@ ROBINHOOD_QUOTES = {
     "0x5fc5360d0400a0fd4f2af552add042d716f1d168",  # USDG
 }
 
+# Verified Base factory deployments. Generic event signatures are only trusted
+# when the emitting contract is explicitly allowlisted.
+BASE_DEX_FACTORIES = {
+    "0x33128a8fc17869897dce68ed026d694621f6fdfd",  # Uniswap V3
+    "0x8909dc15e40173ff4699343b6eb8132c65e18ec6",  # Uniswap V2
+    "0xc35dadb65012ec5796536bd9864ed8773abc74c4",  # Sushi V3
+}
+
 
 def _bool(name: str, default: bool) -> bool:
     value = os.getenv(name)
@@ -64,6 +72,7 @@ class ScannerConfig:
     active_max_age_hours: int = 720
     max_alerts_per_cycle: int = 3
     outcome_candidate_limit: int = 50
+    outcome_missing_confirmations: int = 3
     warmup_cycles: int = 1
     min_liquidity_usd: float = 3_000.0
     max_market_cap_usd: float = 5_000_000.0
@@ -92,6 +101,9 @@ class ScannerConfig:
     max_early_buyers_per_alert: int = 20
     overlay_url: str | None = None
     factory_feeds: dict = field(default_factory=dict)
+    dex_factories: dict[str, set[str]] = field(
+        default_factory=lambda: {"base": set(BASE_DEX_FACTORIES), "robinhood": set()}
+    )
     quote_tokens: dict[str, set[str]] = field(
         default_factory=lambda: {"base": set(BASE_QUOTES), "robinhood": set(ROBINHOOD_QUOTES)}
     )
@@ -107,6 +119,16 @@ class ScannerConfig:
         for chain, addresses in raw_quotes.items():
             if isinstance(addresses, list):
                 quote_tokens[str(chain).lower()] = {str(address).lower() for address in addresses}
+        raw_dex_factories = _json_map("SCANNER_DEX_FACTORIES_JSON")
+        dex_factories: dict[str, set[str]] = {
+            "base": set(BASE_DEX_FACTORIES),
+            "robinhood": set(),
+        }
+        for chain, addresses in raw_dex_factories.items():
+            if isinstance(addresses, list):
+                dex_factories[str(chain).lower()] = {
+                    str(address).lower() for address in addresses if str(address).startswith("0x")
+                }
 
         return cls(
             enabled=_bool("SCANNER_ENABLED", True),
@@ -125,6 +147,9 @@ class ScannerConfig:
             active_max_age_hours=_int("SCANNER_ACTIVE_MAX_AGE_HOURS", 720),
             max_alerts_per_cycle=max(1, _int("SCANNER_MAX_ALERTS_PER_CYCLE", 3)),
             outcome_candidate_limit=max(1, _int("SCANNER_OUTCOME_ACTIVE_LIMIT", 50)),
+            outcome_missing_confirmations=max(
+                2, _int("SCANNER_OUTCOME_MISSING_CONFIRMATIONS", 3)
+            ),
             warmup_cycles=max(0, _int("SCANNER_WARMUP_CYCLES", 1)),
             min_liquidity_usd=_float("SCANNER_MIN_LIQUIDITY_USD", 3_000.0),
             max_market_cap_usd=_float("SCANNER_MAX_MARKET_CAP_USD", 5_000_000.0),
@@ -163,5 +188,6 @@ class ScannerConfig:
             ),
             overlay_url=os.getenv("SCANNER_SIGNAL_OVERLAY_URL"),
             factory_feeds=_json_map("SCANNER_FACTORY_FEEDS_JSON"),
+            dex_factories=dex_factories,
             quote_tokens=quote_tokens,
         )

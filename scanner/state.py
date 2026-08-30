@@ -113,6 +113,9 @@ class SQLiteState:
                 market_cap_usd REAL,
                 liquidity_usd REAL,
                 return_pct REAL,
+                capture_lag_minutes REAL,
+                mfe_pct REAL,
+                mae_pct REAL,
                 PRIMARY KEY(alert_id, horizon_minutes),
                 FOREIGN KEY(alert_id) REFERENCES alerts(id) ON DELETE CASCADE
             );
@@ -137,6 +140,23 @@ class SQLiteState:
                 last_return_pct REAL,
                 updated_at TEXT NOT NULL,
                 PRIMARY KEY(chain, wallet)
+            );
+
+            CREATE TABLE IF NOT EXISTS wallet_outcomes (
+                chain TEXT NOT NULL,
+                wallet TEXT NOT NULL,
+                candidate_key TEXT NOT NULL,
+                evaluated_at TEXT NOT NULL,
+                return_pct REAL NOT NULL,
+                won INTEGER NOT NULL,
+                PRIMARY KEY(chain, wallet, candidate_key)
+            );
+
+            CREATE TABLE IF NOT EXISTS candidate_market_failures (
+                candidate_key TEXT PRIMARY KEY,
+                consecutive INTEGER NOT NULL DEFAULT 0,
+                last_checked_at TEXT NOT NULL,
+                FOREIGN KEY(candidate_key) REFERENCES candidates(candidate_key) ON DELETE CASCADE
             );
 
             CREATE TABLE IF NOT EXISTS security_profiles (
@@ -166,6 +186,9 @@ class SQLiteState:
         self._ensure_column("alerts", "entry_liquidity_usd", "REAL")
         self._ensure_column("alerts", "mfe_pct", "REAL")
         self._ensure_column("alerts", "mae_pct", "REAL")
+        self._ensure_column("alert_outcomes", "capture_lag_minutes", "REAL")
+        self._ensure_column("alert_outcomes", "mfe_pct", "REAL")
+        self._ensure_column("alert_outcomes", "mae_pct", "REAL")
         self.connection.commit()
 
     def _ensure_column(self, table: str, column: str, declaration: str) -> None:
@@ -279,7 +302,9 @@ class SQLiteState:
         return [self._candidate_from_row(row) for row in rows]
 
     def list_outcome_candidates(self, limit: int = 50) -> list[Candidate]:
-        cutoff = (datetime.now(timezone.utc) - timedelta(hours=25)).isoformat()
+        # Keep a grace window for free-tier sleeps/outages so 24h outcomes are
+        # still collected after the service wakes up.
+        cutoff = (datetime.now(timezone.utc) - timedelta(hours=48)).isoformat()
         rows = self.connection.execute(
             """
             WITH horizons(minutes) AS (VALUES (15), (60), (360), (1440)),
@@ -525,7 +550,9 @@ class SQLiteState:
         cooling_down = datetime.now(timezone.utc) - sent_at < timedelta(minutes=cooldown_minutes)
         meaningful_upgrade = result.score >= float(row["score"]) + score_upgrade
         new_stage = result.stage != row["stage"]
-        return meaningful_upgrade or (new_stage and not cooling_down) or not cooling_down
+        # Do not turn one unchanged token into repeated alerts and correlated
+        # calibration samples merely because the cooldown expired.
+        return meaningful_upgrade or (new_stage and not cooling_down)
 
     def record_alert(
         self,
@@ -560,10 +587,18 @@ class SQLiteState:
         self.connection.commit()
         return alert_id
 
-    def update_alert_outcomes(self, candidate_key: str, snapshot: MarketSnapshot) -> int:
-        if not snapshot.price_usd or snapshot.price_usd <= 0:
+    def update_alert_outcomes(
+        self,
+        candidate_key: str,
+        snapshot: MarketSnapshot,
+        *,
+        terminal_loss: bool = False,
+    ) -> int:
+        if snapshot.price_usd is None or snapshot.price_usd < 0:
             return 0
-        cutoff = (snapshot.captured_at - timedelta(hours=25)).isoformat()
+        if snapshot.price_usd == 0 and not terminal_loss:
+            return 0
+        cutoff = (snapshot.captured_at - timedelta(hours=48)).isoformat()
         rows = self.connection.execute(
             """
             SELECT id, sent_at, entry_price_usd, mfe_pct, mae_pct
@@ -594,8 +629,9 @@ class SQLiteState:
                     """
                     INSERT OR IGNORE INTO alert_outcomes(
                         alert_id, horizon_minutes, due_at, captured_at,
-                        price_usd, market_cap_usd, liquidity_usd, return_pct
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        price_usd, market_cap_usd, liquidity_usd, return_pct,
+                        capture_lag_minutes, mfe_pct, mae_pct
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         row["id"],
@@ -606,6 +642,9 @@ class SQLiteState:
                         market_cap,
                         snapshot.liquidity_usd,
                         return_pct,
+                        max(0.0, elapsed_minutes - horizon),
+                        mfe,
+                        mae,
                     ),
                 )
                 was_inserted = cursor.rowcount > 0
@@ -614,6 +653,55 @@ class SQLiteState:
                     self._update_wallet_reputation(int(row["id"]), return_pct)
         self.connection.commit()
         return inserted
+
+    def reset_market_failures(self, candidate_key: str) -> None:
+        self.connection.execute(
+            "DELETE FROM candidate_market_failures WHERE candidate_key = ?",
+            (candidate_key,),
+        )
+        self.connection.commit()
+
+    def record_missing_market(
+        self,
+        candidate_key: str,
+        captured_at: datetime,
+        confirmations: int = 3,
+    ) -> int:
+        """Classify a repeatedly missing alerted market as a terminal -100% loss.
+
+        Only successful empty market lookups call this method; transport/API
+        failures do not increment the confirmation count.
+        """
+        self.connection.execute(
+            """
+            INSERT INTO candidate_market_failures(candidate_key, consecutive, last_checked_at)
+            VALUES (?, 1, ?)
+            ON CONFLICT(candidate_key) DO UPDATE SET
+                consecutive = candidate_market_failures.consecutive + 1,
+                last_checked_at = excluded.last_checked_at
+            """,
+            (candidate_key, captured_at.isoformat()),
+        )
+        row = self.connection.execute(
+            "SELECT consecutive FROM candidate_market_failures WHERE candidate_key = ?",
+            (candidate_key,),
+        ).fetchone()
+        self.connection.commit()
+        if not row or int(row["consecutive"]) < max(2, confirmations):
+            return 0
+        chain, token_address = candidate_key.split(":", 1)
+        return self.update_alert_outcomes(
+            candidate_key,
+            MarketSnapshot(
+                chain=chain,
+                token_address=token_address,
+                captured_at=captured_at,
+                price_usd=0.0,
+                liquidity_usd=0.0,
+                source="confirmed-market-disappearance",
+            ),
+            terminal_loss=True,
+        )
 
     def record_alert_wallets(self, alert_id: int, chain: str, wallets: set[str]) -> int:
         now = datetime.now(timezone.utc).isoformat()
@@ -635,7 +723,11 @@ class SQLiteState:
 
     def _update_wallet_reputation(self, alert_id: int, return_pct: float) -> None:
         rows = self.connection.execute(
-            "SELECT chain, wallet FROM alert_wallets WHERE alert_id = ?",
+            """
+            SELECT aw.chain, aw.wallet, a.candidate_key
+            FROM alert_wallets aw JOIN alerts a ON a.id = aw.alert_id
+            WHERE aw.alert_id = ?
+            """,
             (alert_id,),
         ).fetchall()
         now = datetime.now(timezone.utc).isoformat()
@@ -643,6 +735,23 @@ class SQLiteState:
         # loss because binary floating point may represent it as 19.9999999.
         win = int(return_pct >= 19.999)
         for row in rows:
+            unique = self.connection.execute(
+                """
+                INSERT OR IGNORE INTO wallet_outcomes(
+                    chain, wallet, candidate_key, evaluated_at, return_pct, won
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    row["chain"],
+                    row["wallet"],
+                    row["candidate_key"],
+                    now,
+                    return_pct,
+                    win,
+                ),
+            )
+            if unique.rowcount <= 0:
+                continue
             self.connection.execute(
                 """
                 INSERT INTO wallet_reputation(
@@ -696,14 +805,28 @@ class SQLiteState:
         outcome_counts = {
             int(row["horizon_minutes"]): int(row["count"])
             for row in self.connection.execute(
-                "SELECT horizon_minutes, COUNT(*) AS count FROM alert_outcomes GROUP BY horizon_minutes"
+                """
+                SELECT horizon_minutes, COUNT(*) AS count
+                FROM alert_outcomes
+                WHERE COALESCE(capture_lag_minutes, 0) <= CASE horizon_minutes
+                    WHEN 1440 THEN 120
+                    WHEN 360 THEN 30
+                    ELSE 15
+                END
+                GROUP BY horizon_minutes
+                """
             ).fetchall()
         }
         rows = self.connection.execute(
             """
-            SELECT a.signal, o.horizon_minutes, o.return_pct, a.mfe_pct, a.mae_pct
+            SELECT a.signal, o.horizon_minutes, o.return_pct, o.mfe_pct, o.mae_pct
             FROM alert_outcomes o JOIN alerts a ON a.id = o.alert_id
             WHERE o.return_pct IS NOT NULL
+              AND COALESCE(o.capture_lag_minutes, 0) <= CASE o.horizon_minutes
+                    WHEN 1440 THEN 120
+                    WHEN 360 THEN 30
+                    ELSE 15
+                  END
             ORDER BY o.captured_at DESC LIMIT 1000
             """
         ).fetchall()
@@ -738,9 +861,11 @@ class SQLiteState:
             return defaults
         rows = self.connection.execute(
             """
-            SELECT a.score, a.mfe_pct, a.mae_pct, o.return_pct
+            SELECT a.score, o.mfe_pct, o.mae_pct, o.return_pct
             FROM alert_outcomes o JOIN alerts a ON a.id = o.alert_id
-            WHERE o.horizon_minutes = 1440 AND o.return_pct IS NOT NULL
+            WHERE o.horizon_minutes = 1440
+              AND o.return_pct IS NOT NULL
+              AND COALESCE(o.capture_lag_minutes, 0) <= 120
             ORDER BY o.captured_at DESC LIMIT 200
             """
         ).fetchall()

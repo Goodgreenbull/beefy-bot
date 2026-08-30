@@ -52,6 +52,14 @@ class SQLiteStateTests(unittest.TestCase):
         self.state.record_alert(self.candidate.key, initial)
         self.assertFalse(self.state.alert_allowed(self.candidate.key, same, 45, 10))
         self.assertTrue(self.state.alert_allowed(self.candidate.key, upgrade, 45, 10))
+        self.state.connection.execute(
+            "UPDATE alerts SET sent_at = ?",
+            ((datetime.now(timezone.utc) - timedelta(hours=1)).isoformat(),),
+        )
+        self.state.connection.commit()
+        self.assertFalse(self.state.alert_allowed(self.candidate.key, same, 45, 10))
+        reawakening = ScoreResult(75, "REAWAKENING", "EARLY WATCH", True, 0, {}, [], [], "test")
+        self.assertTrue(self.state.alert_allowed(self.candidate.key, reawakening, 45, 10))
 
     def test_cursor_and_feed_health_persist(self):
         self.state.set_cursor("feed", "42")
@@ -99,7 +107,74 @@ class SQLiteStateTests(unittest.TestCase):
         ).fetchone()
         self.assertAlmostEqual(alert["mfe_pct"], 50.0)
         self.assertAlmostEqual(alert["mae_pct"], -20.0)
+        horizon_rows = self.state.connection.execute(
+            """
+            SELECT horizon_minutes, mfe_pct, mae_pct
+            FROM alert_outcomes WHERE alert_id = ? ORDER BY horizon_minutes
+            """,
+            (alert_ids[0],),
+        ).fetchall()
+        expected_horizons = [(15, 10.0, 0.0), (60, 10.0, -20.0), (360, 50.0, -20.0), (1440, 50.0, -20.0)]
+        for row, expected in zip(horizon_rows, expected_horizons):
+            self.assertEqual(row["horizon_minutes"], expected[0])
+            self.assertAlmostEqual(row["mfe_pct"], expected[1])
+            self.assertAlmostEqual(row["mae_pct"], expected[2])
+        # Repeat alerts for the same token count as one wallet observation.
+        self.assertNotIn(wallet, self.state.curated_smart_wallets())
+
+        for index in range(2):
+            token = f"0x{index + 900:040x}"
+            candidate = Candidate(chain="base", token_address=token, source="bankr")
+            self.state.upsert_candidate(candidate)
+            alert_id = self.state.record_alert(
+                candidate.key,
+                score,
+                MarketSnapshot(chain="base", token_address=token, price_usd=1.0),
+            )
+            self.state.connection.execute(
+                "UPDATE alerts SET sent_at = ? WHERE id = ?", (sent_at.isoformat(), alert_id)
+            )
+            self.state.record_alert_wallets(alert_id, "base", {wallet})
+            self.state.update_alert_outcomes(
+                candidate.key,
+                MarketSnapshot(
+                    chain="base",
+                    token_address=token,
+                    captured_at=sent_at + timedelta(hours=24),
+                    price_usd=1.3,
+                ),
+            )
+
         self.assertIn(wallet, self.state.curated_smart_wallets())
+        reputation = self.state.connection.execute(
+            "SELECT evaluated_alerts FROM wallet_reputation WHERE wallet = ?", (wallet,)
+        ).fetchone()
+        self.assertEqual(reputation["evaluated_alerts"], 3)
+
+    def test_confirmed_market_disappearance_records_terminal_loss(self):
+        score = ScoreResult(84, "IGNITION", "STRONG WATCH", True, 0, {}, [], [], "test")
+        sent_at = datetime.now(timezone.utc) - timedelta(minutes=20)
+        alert_id = self.state.record_alert(
+            self.candidate.key,
+            score,
+            MarketSnapshot(chain="base", token_address=TOKEN, price_usd=1.0),
+        )
+        self.state.connection.execute(
+            "UPDATE alerts SET sent_at = ? WHERE id = ?", (sent_at.isoformat(), alert_id)
+        )
+        self.state.connection.commit()
+
+        self.assertEqual(self.state.record_missing_market(self.candidate.key, sent_at + timedelta(minutes=16)), 0)
+        self.assertEqual(self.state.record_missing_market(self.candidate.key, sent_at + timedelta(minutes=17)), 0)
+        inserted = self.state.record_missing_market(
+            self.candidate.key, sent_at + timedelta(minutes=18)
+        )
+        self.assertEqual(inserted, 1)
+        outcome = self.state.connection.execute(
+            "SELECT return_pct FROM alert_outcomes WHERE alert_id = ? AND horizon_minutes = 15",
+            (alert_id,),
+        ).fetchone()
+        self.assertEqual(outcome["return_pct"], -100.0)
 
     def test_active_candidates_balance_fresh_and_rotating_rechecks(self):
         self.state.connection.execute("DELETE FROM candidates")
@@ -158,8 +233,9 @@ class SQLiteStateTests(unittest.TestCase):
                 """
                 INSERT INTO alert_outcomes(
                     alert_id, horizon_minutes, due_at, captured_at,
-                    price_usd, market_cap_usd, liquidity_usd, return_pct
-                ) VALUES (?, 1440, ?, ?, ?, 100000, 10000, ?)
+                    price_usd, market_cap_usd, liquidity_usd, return_pct,
+                    capture_lag_minutes, mfe_pct, mae_pct
+                ) VALUES (?, 1440, ?, ?, ?, 100000, 10000, ?, 0, 45, -12)
                 """,
                 (
                     alert_id,

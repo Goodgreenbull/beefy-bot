@@ -6,6 +6,7 @@ from scanner.feeds import (
     BankrLaunchFeed,
     BaselineLaunchFeed,
     ClankerLaunchFeed,
+    DexScreenerEnricher,
     DexScreenerProfilesFeed,
     FactoryLaunchFeed,
     O1_FACTORIES,
@@ -183,6 +184,12 @@ class DirectFeedSession:
                     "result": {
                         TOKEN: {
                             "is_honeypot": "0",
+                            "cannot_buy": "0",
+                            "cannot_sell": "0",
+                            "owner_change_balance": "0",
+                            "transfer_pausable": "0",
+                            "is_blacklisted": "0",
+                            "is_mintable": "0",
                             "sell_tax": "0.03",
                             "is_open_source": "1",
                         }
@@ -215,7 +222,10 @@ class FeedTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(rows[0].symbol, "TEST")
 
     async def test_rpc_pair_feed_selects_non_quote_token_and_advances_cursor(self):
-        feed = RpcPairFeed("base", "https://rpc.example", ScannerConfig())
+        config = ScannerConfig(
+            dex_factories={"base": {"0x6666666666666666666666666666666666666666"}}
+        )
+        feed = RpcPairFeed("base", "https://rpc.example", config)
         rows = await feed.discover(RpcSession(), self.state)
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0].token_address, TOKEN)
@@ -247,9 +257,52 @@ class FeedTests(unittest.IsolatedAsyncioTestCase):
             Candidate(chain="base", token_address=TOKEN, source="clanker"),
         )
         self.assertTrue(profile.checked)
+        self.assertTrue(profile.admin_checks_complete)
+        self.assertTrue(profile.simulation_checked)
         self.assertFalse(profile.is_honeypot)
         self.assertEqual(profile.sell_tax, 3)
         self.assertTrue(profile.open_source)
+
+    async def test_malformed_security_responses_are_not_treated_as_clean(self):
+        class ErrorSession:
+            def get(self, url, **kwargs):
+                return FakeResponse({"error": "provider unavailable"})
+
+        profile = await TokenRiskEnricher(ScannerConfig()).check(
+            ErrorSession(),
+            Candidate(chain="base", token_address=TOKEN, source="clanker"),
+        )
+        self.assertFalse(profile.checked)
+        self.assertFalse(profile.admin_checks_complete)
+        self.assertFalse(profile.simulation_checked)
+
+    async def test_dex_enrichment_rejects_quote_side_price_for_candidate(self):
+        class QuoteOnlySession:
+            def get(self, url, **kwargs):
+                return FakeResponse(
+                    {
+                        "pairs": [
+                            {
+                                "chainId": "base",
+                                "pairAddress": PAIR,
+                                "baseToken": {
+                                    "address": WETH,
+                                    "name": "Wrapped Ether",
+                                    "symbol": "WETH",
+                                },
+                                "quoteToken": {"address": TOKEN},
+                                "priceUsd": "4500",
+                                "liquidity": {"usd": 1000000},
+                            }
+                        ]
+                    }
+                )
+
+        market = await DexScreenerEnricher(ScannerConfig()).enrich(
+            QuoteOnlySession(),
+            Candidate(chain="base", token_address=TOKEN, source="rpc-pairs:base:v2"),
+        )
+        self.assertIsNone(market)
 
     async def test_latest_profiles_broaden_nonstandard_discovery(self):
         rows = await DexScreenerProfilesFeed().discover(DirectFeedSession(), self.state)

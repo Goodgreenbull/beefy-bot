@@ -109,14 +109,16 @@ class ScannerService:
             self.state.mark_feed_error(feed.name, error)
             return []
 
-    async def _enrich(self, candidate: Candidate) -> tuple[Candidate, MarketSnapshot | None]:
+    async def _enrich(
+        self, candidate: Candidate
+    ) -> tuple[Candidate, MarketSnapshot | None, bool]:
         assert self.session is not None
         try:
             snapshot = await self.enricher.enrich(self.session, candidate)
-            return candidate, snapshot
+            return candidate, snapshot, True
         except Exception as error:
             self.state.mark_feed_error("dexscreener", error)
-            return candidate, None
+            return candidate, None, False
 
     @staticmethod
     def _apply_external_signals(
@@ -163,6 +165,7 @@ class ScannerService:
                 self.config.active_max_age_hours, self.config.active_candidate_limit
             )
             outcome_candidates = self.state.list_outcome_candidates(self.config.outcome_candidate_limit)
+            outcome_keys = {candidate.key for candidate in outcome_candidates}
             candidates = list({candidate.key: candidate for candidate in candidates + outcome_candidates}.values())
             overlay_task = asyncio.create_task(self.overlay.fetch(self.session))
             wallet_task = asyncio.create_task(
@@ -187,9 +190,17 @@ class ScannerService:
             alert_count = 0
             outcome_count = 0
             prepared: list[tuple[Candidate, MarketSnapshot, list[MarketSnapshot], ScoreResult]] = []
-            for candidate, snapshot in enriched:
+            for candidate, snapshot, request_succeeded in enriched:
                 if snapshot is None:
+                    if request_succeeded and candidate.key in outcome_keys:
+                        outcome_count += self.state.record_missing_market(
+                            candidate.key,
+                            datetime.now(timezone.utc),
+                            self.config.outcome_missing_confirmations,
+                        )
                     continue
+                if candidate.key in outcome_keys:
+                    self.state.reset_market_failures(candidate.key)
                 enriched_count += 1
                 if snapshot.raw.get("url"):
                     candidate.chart_url = str(snapshot.raw["url"])
@@ -231,7 +242,25 @@ class ScannerService:
 
             risk_targets = [
                 item for item in sorted(prepared, key=lambda item: item[3].score, reverse=True)
-                if not (item[1].raw.get("security") or {}).get("checked")
+                if (
+                    not (item[1].raw.get("security") or {}).get("admin_checks_complete")
+                    or (
+                        item[0].chain == "base"
+                        and not (item[1].raw.get("security") or {}).get("simulation_checked")
+                        and not any(
+                            source in {
+                                "bankr",
+                                "flaunch",
+                                "clanker",
+                                "baseline",
+                                "o1-b20",
+                                "pools-fun",
+                                "basestonk",
+                            }
+                            for source in item[0].source.split(",")
+                        )
+                    )
+                )
                 and item[3].score >= self.config.security_check_min_score
             ][: self.config.max_security_checks_per_cycle]
             checked_profiles = await asyncio.gather(

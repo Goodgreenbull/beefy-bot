@@ -10,6 +10,8 @@ NOW = datetime(2026, 8, 29, 12, 0, tzinfo=timezone.utc)
 TOKEN = "0x1111111111111111111111111111111111111111"
 CLEAN_SECURITY = {
     "checked": True,
+    "admin_checks_complete": True,
+    "simulation_checked": True,
     "is_honeypot": False,
     "cannot_buy": False,
     "cannot_sell": False,
@@ -93,6 +95,12 @@ class SignalScorerTests(unittest.TestCase):
         self.assertFalse(result.eligible)
         self.assertTrue(any("liquidity" in item for item in result.blockers))
 
+    def test_missing_price_never_alerts(self):
+        candidate = Candidate(chain="base", token_address=TOKEN, source="bankr", launch_at=NOW)
+        result = self.scorer.score(candidate, snapshot(price_usd=None), [], now=NOW)
+        self.assertFalse(result.eligible)
+        self.assertIn("price unavailable", " ".join(result.blockers))
+
     def test_buy_tier_requires_strong_trade_quality(self):
         candidate = Candidate(
             chain="base",
@@ -119,6 +127,31 @@ class SignalScorerTests(unittest.TestCase):
         )
         self.assertFalse(result.eligible)
         self.assertIn("honeypot simulation failed", result.blockers)
+
+    def test_untrusted_pool_requires_sell_simulation_but_verified_launch_can_fallback(self):
+        security = CLEAN_SECURITY | {"simulation_checked": False}
+        generic = Candidate(
+            chain="base", token_address=TOKEN, source="rpc-pairs:base:v2", launch_at=NOW
+        )
+        verified = Candidate(chain="base", token_address=TOKEN, source="o1-b20", launch_at=NOW)
+        self.assertFalse(
+            self.scorer.score(generic, snapshot(raw={"security": security}), [], now=NOW).eligible
+        )
+        self.assertTrue(
+            self.scorer.score(verified, snapshot(raw={"security": security}), [], now=NOW).eligible
+        )
+
+    def test_high_buy_tax_and_unlocked_lp_are_rejected(self):
+        candidate = Candidate(
+            chain="base", token_address=TOKEN, source="rpc-pairs:base:v2", launch_at=NOW
+        )
+        unsafe = CLEAN_SECURITY | {"buy_tax": 25, "lp_unlocked_percent": 80}
+        result = self.scorer.score(
+            candidate, snapshot(raw={"security": unsafe}), [], now=NOW
+        )
+        self.assertFalse(result.eligible)
+        self.assertIn("buy tax 25%", result.blockers)
+        self.assertIn("80% of LP appears unlocked", result.blockers)
 
     def test_copycat_penalty_can_suppress_otherwise_eligible_alert(self):
         candidate = Candidate(

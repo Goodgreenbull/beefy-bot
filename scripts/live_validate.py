@@ -26,6 +26,7 @@ async def main() -> int:
     )
     state = SQLiteState(":memory:")
     failed = False
+    recent_candidates: dict[str, Candidate] = {}
     timeout = aiohttp.ClientTimeout(total=config.http_timeout_seconds)
     try:
         async with aiohttp.ClientSession(
@@ -51,27 +52,32 @@ async def main() -> int:
             for feed in feeds:
                 try:
                     rows = await feed.discover(session, state)
+                    if rows and (
+                        rows[0].chain not in recent_candidates
+                        or feed.name.startswith("platform-launches")
+                    ):
+                        recent_candidates[rows[0].chain] = rows[0]
                     detail = rows[0].source if rows else "healthy; no event in lookback"
                     print(f"{feed.name}: {len(rows)} ({detail})")
                 except Exception as error:  # smoke script should report every dependency
                     failed = True
                     print(f"{feed.name}: ERROR {type(error).__name__}: {str(error)[:160]}")
 
-            safety_checks = (
-                ("base", "0x4200000000000000000000000000000000000006"),
-                ("robinhood", "0x0bd7d308f8e1639fab988df18a8011f41eacad73"),
-            )
-            for chain, address in safety_checks:
+            for chain, candidate in recent_candidates.items():
                 profile = await TokenRiskEnricher(config).check(
                     session,
-                    Candidate(chain=chain, token_address=address, source="validation"),
+                    candidate,
                 )
                 print(
-                    f"token-safety:{chain}: "
+                    f"token-safety:{chain}:{candidate.token_address}: "
                     f"checked={profile.checked} providers={','.join(profile.providers) or 'none'} "
-                    f"honeypot={profile.is_honeypot}"
+                    f"admin={profile.admin_checks_complete} "
+                    f"simulation={profile.simulation_checked} honeypot={profile.is_honeypot} "
+                    f"error={profile.error or 'none'}"
                 )
-                failed = failed or not profile.checked
+                failed = failed or not profile.admin_checks_complete
+                if chain == "base" and not candidate.source.startswith("o1-"):
+                    failed = failed or not profile.simulation_checked
     finally:
         state.close()
     return int(failed)

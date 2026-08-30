@@ -10,12 +10,12 @@ The previous alpha job sampled promoted/trending tokens and compared 24-hour vol
 
 The quality-v2 free profile scans every five minutes and separates the job into:
 
-1. Direct discovery from Bankr, Flaunch, Clanker, Baseline, verified o1/B20 factory events, GeckoTerminal, DexScreener profiles, and V2/V3 pool events on Base and Robinhood Chain.
+1. Direct discovery from Bankr, Flaunch, Clanker, Baseline, verified o1/B20 factory events, GeckoTerminal, DexScreener profiles, and allowlisted V2/V3 factory events.
 2. SQLite state for candidates, rolling market snapshots, feed cursors, scores, feed health, alert outcomes, and deduplication while the free instance remains alive.
 3. DexScreener enrichment plus free GoPlus and Honeypot.is contract screening.
 4. Transparent ignition/reawakening scoring with anti-late, identity-copy, serial-deployer, concentration, tax, honeypot, and dangerous-admin filters.
 5. Concise Telegram WATCH/BUY verdicts with score, stage, age, liquidity, market cap, 5-minute flow, contract-check status, drivers, and invalidation.
-6. Every alert is re-sampled after 15 minutes, one hour, six hours, and 24 hours. Beefy records return, observed maximum favourable excursion (MFE), and observed maximum adverse excursion (MAE).
+6. Every alert is re-sampled after 15 minutes, one hour, six hours, and 24 hours. Beefy records return, observed maximum favourable excursion (MFE), and observed maximum adverse excursion (MAE). Three successful empty market lookups classify a disappeared pool as a terminal loss rather than silently dropping it.
 
 The old scheduled daily alpha report and two-hour breakout alert are no longer scheduled, so there is one automated signal path. `/trending` and `/lookup` remain available as manual research tools.
 
@@ -75,7 +75,7 @@ Existing community commands and moderation remain in `server.py`.
 
 Set `SCANNER_SMART_WALLETS` to comma-separated, manually verified public addresses. The scanner counts ERC-20 transfers into and out of those wallets for active candidates on Base and Robinhood Chain.
 
-Beefy also records the transaction senders buying an alerted token from its pool. It does not promote a wallet from one lucky trade: by default the wallet must have at least three completed 24-hour observations, at least a 60% rate of +20% winners, and at least +10% average 24-hour return. The resulting cohort is then monitored automatically. Wallet addresses are public data; no wallet credential is used.
+Beefy also records the transaction senders buying an alerted token from its pool. Repeat alerts on one token count once. By default a wallet must therefore succeed across at least three distinct completed token observations, with at least a 60% rate of +20% winners and at least +10% average 24-hour return. The resulting cohort is then monitored automatically. Wallet addresses are public data; no wallet credential is used.
 
 ### Additional launch factories
 

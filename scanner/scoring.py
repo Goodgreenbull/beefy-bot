@@ -93,7 +93,8 @@ class SignalScorer:
             "pools-fun",
             "basestonk",
         }
-        if source_names & verified_sources:
+        trusted_launch = bool(source_names & verified_sources)
+        if trusted_launch:
             components["direct_launch"] = 5.0
 
         security = snapshot.raw.get("security") if isinstance(snapshot.raw, dict) else None
@@ -138,9 +139,16 @@ class SignalScorer:
         if risk_penalty:
             blockers.append(str(identity.get("reason") or "copycat identity overlap"))
         hard_risk = False
+        safety_complete = bool(security.get("admin_checks_complete")) and (
+            candidate.chain != "base"
+            or bool(security.get("simulation_checked"))
+            or trusted_launch
+        )
         if not security.get("checked"):
             blockers.append("contract safety not confirmed yet")
         else:
+            if not safety_complete:
+                blockers.append("contract safety response incomplete")
             if security.get("is_honeypot"):
                 blockers.append("honeypot simulation failed")
                 hard_risk = True
@@ -156,6 +164,13 @@ class SignalScorer:
             if security.get("selfdestruct"):
                 blockers.append("contract can self-destruct")
                 hard_risk = True
+            buy_tax = float(security.get("buy_tax") or 0.0)
+            if buy_tax >= 20:
+                blockers.append(f"buy tax {buy_tax:.0f}%")
+                hard_risk = True
+            elif buy_tax >= 5:
+                blockers.append(f"elevated buy tax {buy_tax:.0f}%")
+                risk_penalty += min(10.0, buy_tax * 0.5)
             sell_tax = float(security.get("sell_tax") or 0.0)
             if sell_tax >= 20:
                 blockers.append(f"sell tax {sell_tax:.0f}%")
@@ -187,7 +202,7 @@ class SignalScorer:
                     risk_penalty += penalty
             if security.get("open_source") is False:
                 blockers.append("contract source not verified")
-                risk_penalty += 8.0
+                hard_risk = True
             owner_percent = float(security.get("owner_percent") or 0.0)
             if owner_percent > 10:
                 blockers.append(f"owner holds {owner_percent:.0f}%")
@@ -206,7 +221,15 @@ class SignalScorer:
             if concentration > 35:
                 blockers.append(f"top unlocked wallets hold {concentration:.0f}%")
                 risk_penalty += min(12.0, (concentration - 35.0) * 0.35)
-            if not hard_risk and risk_penalty < 8:
+            lp_unlocked = security.get("lp_unlocked_percent")
+            if (
+                isinstance(lp_unlocked, (int, float))
+                and float(lp_unlocked) > 50
+                and not trusted_launch
+            ):
+                blockers.append(f"{float(lp_unlocked):.0f}% of LP appears unlocked")
+                hard_risk = True
+            if safety_complete and not hard_risk and risk_penalty < 8:
                 components["contract_safety"] = 5.0
 
         if market_cap and snapshot.liquidity_usd and market_cap / snapshot.liquidity_usd > 60:
@@ -216,7 +239,14 @@ class SignalScorer:
         final_score = round(_clamp(raw_score), 1)
 
         hard_late = anti_late_penalty >= 35.0
-        basic_quality = snapshot.liquidity_usd >= self.config.min_liquidity_usd and txns_5m >= 6
+        has_price = snapshot.price_usd is not None and snapshot.price_usd > 0
+        if not has_price:
+            blockers.append("reliable USD price unavailable")
+        basic_quality = (
+            has_price
+            and snapshot.liquidity_usd >= self.config.min_liquidity_usd
+            and txns_5m >= 6
+        )
         evidence_quality = snapshot.social_links >= 1 or snapshot.smart_wallet_buys >= 1
         if not evidence_quality:
             blockers.append("no project/social or proven smart-wallet evidence")
@@ -224,7 +254,7 @@ class SignalScorer:
             final_score >= min_alert_score
             and basic_quality
             and evidence_quality
-            and bool(security.get("checked"))
+            and safety_complete
             and not hard_late
             and not hard_risk
         )
@@ -251,6 +281,7 @@ class SignalScorer:
             )
             and float(security.get("creator_percent") or 0.0) <= 10
             and int(security.get("creator_honeypot_count") or 0) == 0
+            and float(security.get("buy_tax") or 0.0) < 5
             and float(security.get("sell_tax") or 0.0) < 5
             and float(identity.get("copycat_penalty") or 0.0) == 0
         )

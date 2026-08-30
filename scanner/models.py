@@ -92,6 +92,8 @@ class SecurityProfile:
     token_address: str
     checked_at: datetime = field(default_factory=utc_now)
     checked: bool = False
+    admin_checks_complete: bool = False
+    simulation_checked: bool = False
     providers: tuple[str, ...] = ()
     is_honeypot: bool = False
     cannot_buy: bool = False
@@ -107,6 +109,8 @@ class SecurityProfile:
     sell_tax: float | None = None
     owner_percent: float | None = None
     top_unlocked_eoa_percent: float | None = None
+    lp_locked_percent: float | None = None
+    lp_unlocked_percent: float | None = None
     holder_count: int | None = None
     fake_token: bool = False
     creator_percent: float | None = None

@@ -36,6 +36,8 @@ class FakeEnricher:
             raw={
                 "security": {
                     "checked": True,
+                    "admin_checks_complete": True,
+                    "simulation_checked": True,
                     "is_honeypot": False,
                     "cannot_buy": False,
                     "cannot_sell": False,

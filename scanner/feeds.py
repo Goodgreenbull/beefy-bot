@@ -517,7 +517,7 @@ class GeckoTerminalNewPoolsFeed:
 
 
 class RpcPairFeed:
-    """Find standard V2 PairCreated and V3 PoolCreated events without guessing factories."""
+    """Find standard V2/V3 events emitted by verified exchange factories."""
 
     def __init__(self, chain: str, rpc_url: str, config: ScannerConfig) -> None:
         self.chain = chain
@@ -567,10 +567,20 @@ class RpcPairFeed:
         if start > latest:
             return []
 
+        factories = sorted(self.config.dex_factories.get(self.chain, set()))
+        if not factories:
+            state.set_cursor(cursor_key, str(latest))
+            return []
+
         logs = await self._rpc(
             session,
             "eth_getLogs",
-            [{"fromBlock": hex(start), "toBlock": hex(latest), "topics": [[PAIR_CREATED_TOPIC, POOL_CREATED_TOPIC]]}],
+            [{
+                "fromBlock": hex(start),
+                "toBlock": hex(latest),
+                "address": factories,
+                "topics": [[PAIR_CREATED_TOPIC, POOL_CREATED_TOPIC]],
+            }],
         )
         block_numbers = {int(log["blockNumber"], 16) for log in logs or [] if log.get("blockNumber")}
         block_times = await self._block_times(session, block_numbers)
@@ -578,6 +588,8 @@ class RpcPairFeed:
         candidates: list[Candidate] = []
 
         for log in logs or []:
+            if normalise_address(log.get("address")) not in set(factories):
+                continue
             topics = log.get("topics") or []
             if len(topics) < 3:
                 continue
@@ -644,13 +656,21 @@ class DexScreenerEnricher:
                 chain_pairs = exact
         if not chain_pairs:
             return snapshot_from_fallback(candidate)
-        viable = chain_pairs
-        pair = max(viable, key=lambda p: _number((p.get("liquidity") or {}).get("usd")))
-        base_token = pair.get("baseToken") or {}
-        if normalise_address(base_token.get("address")) not in {candidate.token_address, ""}:
-            matching = [p for p in viable if normalise_address((p.get("baseToken") or {}).get("address")) == candidate.token_address]
-            if matching:
-                pair = max(matching, key=lambda p: _number((p.get("liquidity") or {}).get("usd")))
+        # DexScreener's token endpoint can return pools where the requested token
+        # is only the quote asset. Its priceUsd/name fields describe baseToken, so
+        # accepting those rows would silently score and track the wrong token.
+        base_matches = [
+            pair
+            for pair in chain_pairs
+            if normalise_address((pair.get("baseToken") or {}).get("address"))
+            == candidate.token_address
+        ]
+        if not base_matches:
+            return snapshot_from_fallback(candidate)
+        pair = max(
+            base_matches,
+            key=lambda item: _number((item.get("liquidity") or {}).get("usd")),
+        )
 
         info = pair.get("info") or {}
         socials = info.get("socials") or []
@@ -777,15 +797,39 @@ class TokenRiskEnricher:
         goplus = results[0] if isinstance(results[0], dict) else {}
         honeypot = results[1] if isinstance(results[1], dict) else {}
         errors = [str(item) for item in results if isinstance(item, Exception)]
+        recognised_goplus_keys = {
+            "is_honeypot",
+            "is_open_source",
+            "cannot_buy",
+            "cannot_sell_all",
+            "cannot_sell",
+            "owner_change_balance",
+            "transfer_pausable",
+            "is_blacklisted",
+            "is_mintable",
+            "buy_tax",
+            "sell_tax",
+            "owner_percent",
+            "holders",
+            "lp_holders",
+        }
+        # Risk fields are conditional in GoPlus, so absence does not itself mean
+        # an API failure. Require its contract/source result plus multiple known
+        # fields, while rejecting arbitrary non-empty error payloads.
+        goplus_usable = (
+            "is_open_source" in goplus
+            and len(recognised_goplus_keys.intersection(goplus)) >= 3
+        )
+        hp_result = honeypot.get("honeypotResult") or {}
+        honeypot_usable = isinstance(hp_result.get("isHoneypot"), bool)
         providers: list[str] = []
-        if goplus:
+        if goplus_usable:
             providers.append("goplus")
-        if honeypot:
+        if honeypot_usable:
             providers.append("honeypot.is")
 
         summary = honeypot.get("summary") or {}
         simulation = honeypot.get("simulationResult") or {}
-        hp_result = honeypot.get("honeypotResult") or {}
         contract_code = honeypot.get("contractCode") or {}
         flags = {
             str(item.get("flag", "")).lower()
@@ -805,6 +849,23 @@ class TokenRiskEnricher:
                 "0x000000000000000000000000000000000000dead",
             }
         )
+        lp_holders = [item for item in (goplus.get("lp_holders") or []) if isinstance(item, dict)]
+        burn_addresses = {
+            "0x0000000000000000000000000000000000000000",
+            "0x000000000000000000000000000000000000dead",
+        }
+        lp_locked = sum(
+            _percent(holder.get("percent"), 0.0) or 0.0
+            for holder in lp_holders
+            if _truthy(holder.get("is_locked"))
+            or str(holder.get("address", "")).lower() in burn_addresses
+        )
+        lp_unlocked = sum(
+            _percent(holder.get("percent"), 0.0) or 0.0
+            for holder in lp_holders
+            if not _truthy(holder.get("is_locked"))
+            and str(holder.get("address", "")).lower() not in burn_addresses
+        )
         open_source: bool | None = None
         if goplus.get("is_open_source") not in (None, ""):
             open_source = _truthy(goplus.get("is_open_source"))
@@ -815,10 +876,13 @@ class TokenRiskEnricher:
             chain=candidate.chain,
             token_address=candidate.token_address,
             checked=bool(providers),
+            admin_checks_complete=goplus_usable,
+            simulation_checked=honeypot_usable,
             providers=tuple(providers),
             is_honeypot=_truthy(goplus.get("is_honeypot")) or bool(hp_result.get("isHoneypot")),
             cannot_buy=_truthy(goplus.get("cannot_buy")),
-            cannot_sell=_truthy(goplus.get("cannot_sell")),
+            cannot_sell=_truthy(goplus.get("cannot_sell"))
+            or _truthy(goplus.get("cannot_sell_all")),
             hidden_owner=_truthy(goplus.get("hidden_owner")),
             owner_change_balance=_truthy(goplus.get("owner_change_balance")),
             transfer_pausable=_truthy(goplus.get("transfer_pausable")),
@@ -830,6 +894,8 @@ class TokenRiskEnricher:
             sell_tax=_number(simulation.get("sellTax"), _percent(goplus.get("sell_tax"), 0.0) or 0.0),
             owner_percent=_percent(goplus.get("owner_percent")),
             top_unlocked_eoa_percent=round(unlocked_eoa, 2) if holders else None,
+            lp_locked_percent=round(lp_locked, 2) if lp_holders else None,
+            lp_unlocked_percent=round(lp_unlocked, 2) if lp_holders else None,
             holder_count=_integer(goplus.get("holder_count"), 0) or _integer((honeypot.get("token") or {}).get("totalHolders"), 0) or None,
             fake_token=_truthy(goplus.get("fake_token")),
             creator_percent=_percent(goplus.get("creator_percent")),

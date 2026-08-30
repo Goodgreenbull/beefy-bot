@@ -23,5 +23,7 @@ services:
         value: "1"
       - key: SCANNER_AUTO_CALIBRATE
         value: "true"
+      - key: SCANNER_OUTCOME_MISSING_CONFIRMATIONS
+        value: "3"
       - key: SCANNER_AUTO_CURATE_SMART_WALLETS
         value: "true"
