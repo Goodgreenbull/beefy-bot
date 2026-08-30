@@ -15,6 +15,7 @@ class ScannerConfigTests(unittest.TestCase):
         self.assertEqual(config.alert_chat_id, "12345")
         self.assertEqual(config.max_alerts_per_cycle, 3)
         self.assertEqual(config.warmup_cycles, 1)
+        self.assertEqual(config.token_realert_hours, 24)
 
     def test_explicit_signal_chat_wins_without_exposing_credentials(self):
         values = {

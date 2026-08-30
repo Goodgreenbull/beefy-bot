@@ -44,14 +44,14 @@ class SQLiteStateTests(unittest.TestCase):
         self.assertEqual(len(saved), 1)
         self.assertEqual(saved[0].buys_5m, 8)
 
-    def test_alert_dedup_allows_only_material_upgrade_during_cooldown(self):
+    def test_alert_dedup_blocks_same_token_for_24h_then_allows_reawakening(self):
         initial = ScoreResult(72, "IGNITION", "EARLY WATCH", True, 0, {}, [], [], "test")
         same = ScoreResult(75, "IGNITION", "EARLY WATCH", True, 0, {}, [], [], "test")
         upgrade = ScoreResult(84, "IGNITION", "STRONG WATCH", True, 0, {}, [], [], "test")
         self.assertTrue(self.state.alert_allowed(self.candidate.key, initial, 45, 10))
         self.state.record_alert(self.candidate.key, initial)
         self.assertFalse(self.state.alert_allowed(self.candidate.key, same, 45, 10))
-        self.assertTrue(self.state.alert_allowed(self.candidate.key, upgrade, 45, 10))
+        self.assertFalse(self.state.alert_allowed(self.candidate.key, upgrade, 45, 10))
         self.state.connection.execute(
             "UPDATE alerts SET sent_at = ?",
             ((datetime.now(timezone.utc) - timedelta(hours=1)).isoformat(),),
@@ -59,6 +59,12 @@ class SQLiteStateTests(unittest.TestCase):
         self.state.connection.commit()
         self.assertFalse(self.state.alert_allowed(self.candidate.key, same, 45, 10))
         reawakening = ScoreResult(75, "REAWAKENING", "EARLY WATCH", True, 0, {}, [], [], "test")
+        self.assertFalse(self.state.alert_allowed(self.candidate.key, reawakening, 45, 10))
+        self.state.connection.execute(
+            "UPDATE alerts SET sent_at = ?",
+            ((datetime.now(timezone.utc) - timedelta(hours=25)).isoformat(),),
+        )
+        self.state.connection.commit()
         self.assertTrue(self.state.alert_allowed(self.candidate.key, reawakening, 45, 10))
 
     def test_cursor_and_feed_health_persist(self):

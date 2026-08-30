@@ -159,6 +159,8 @@ class ScannerService:
             discovered_lists = await asyncio.gather(*(self._run_feed(feed) for feed in self.feeds))
             discovered = [candidate for rows in discovered_lists for candidate in rows]
             for candidate in discovered:
+                if not warmup_complete:
+                    candidate.metadata["bootstrap_candidate"] = True
                 self.state.upsert_candidate(candidate)
 
             candidates = self.state.list_active_candidates(
@@ -291,6 +293,10 @@ class ScannerService:
                 if (
                     warmup_complete
                     and result.eligible
+                    and (
+                        not candidate.metadata.get("bootstrap_candidate")
+                        or result.stage == "REAWAKENING"
+                    )
                     and self.alert_callback
                     and alert_count < self.config.max_alerts_per_cycle
                     and self.state.alert_allowed(
@@ -298,6 +304,7 @@ class ScannerService:
                         result,
                         self.config.alert_cooldown_minutes,
                         self.config.alert_score_upgrade,
+                        self.config.token_realert_hours,
                     )
                 ):
                     try:

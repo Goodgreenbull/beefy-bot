@@ -14,10 +14,12 @@ The quality-v2 free profile scans every five minutes and separates the job into:
 2. SQLite state for candidates, rolling market snapshots, feed cursors, scores, feed health, alert outcomes, and deduplication while the free instance remains alive.
 3. DexScreener enrichment plus free GoPlus and Honeypot.is contract screening.
 4. Transparent ignition/reawakening scoring with anti-late, identity-copy, serial-deployer, concentration, tax, honeypot, and dangerous-admin filters.
-5. Concise Telegram WATCH/BUY verdicts with score, stage, age, liquidity, market cap, 5-minute flow, contract-check status, drivers, and invalidation.
+5. Concise Telegram WATCH/BUY verdicts with a bounded upside scenario from the alert price, a setup-specific one-line explanation, score, stage, age, liquidity, market cap, 5-minute flow, contract-check status, and invalidation.
 6. Every alert is re-sampled after 15 minutes, one hour, six hours, and 24 hours. Beefy records return, observed maximum favourable excursion (MFE), and observed maximum adverse excursion (MAE). Three successful empty market lookups classify a disappeared pool as a terminal loss rather than silently dropping it.
 
 The old scheduled daily alpha report and two-hour breakout alert are no longer scheduled, so there is one automated signal path. `/trending` and `/lookup` remain available as manual research tools.
+
+The same contract is suppressed for 24 hours regardless of score changes or how many feeds discover it. After that, it can alert again only as a genuinely new reawakening setup. Scenario multiples are explanatory model outputs, not promised returns.
 
 ## Safety boundaries
 
@@ -54,7 +56,7 @@ Render sleeps a free web service after 15 minutes without inbound traffic. This 
 
 The scanner defaults to a five-minute cadence, enriches at most 50 active candidates plus 50 alerted tokens awaiting outcomes, runs at most 12 new contract checks per cycle, and sends at most three alerts per cycle. Outcome candidates are ordered by their next due measurement so an older alert is not starved by newer ones. Seventy percent of each normal cycle is reserved for the newest candidates and thirty percent rotates through older candidates so reawakenings are not starved by new launches.
 
-Render can still restart a free service at any time and its local filesystem is ephemeral. On a fresh state database, Beefy Bot suppresses the first alert cycle, rebuilds candidates from the direct feeds and a 1,800-block RPC lookback, then resumes alerts. This is a recovery strategy rather than permanent storage, but it avoids introducing a paid database.
+Render can still restart a free service at any time and its local filesystem is ephemeral. On a fresh state database, Beefy Bot rebuilds candidates from the direct feeds and a 1,800-block RPC lookback and marks that backlog as a bootstrap cohort. Those contracts cannot produce recycled new-launch alerts; they become eligible only after a later measured reawakening. Genuinely new discoveries after startup alert normally. This is a recovery strategy rather than permanent storage, but it avoids introducing a paid database.
 
 No wallet key is needed or wanted.
 

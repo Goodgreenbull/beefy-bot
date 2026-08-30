@@ -539,6 +539,7 @@ class SQLiteState:
         result: ScoreResult,
         cooldown_minutes: int,
         score_upgrade: float,
+        token_realert_hours: int = 24,
     ) -> bool:
         row = self.connection.execute(
             "SELECT sent_at, stage, score FROM alerts WHERE candidate_key = ? ORDER BY sent_at DESC LIMIT 1",
@@ -547,12 +548,18 @@ class SQLiteState:
         if not row:
             return True
         sent_at = _dt(row["sent_at"]) or datetime.now(timezone.utc)
-        cooling_down = datetime.now(timezone.utc) - sent_at < timedelta(minutes=cooldown_minutes)
+        elapsed = datetime.now(timezone.utc) - sent_at
+        if elapsed < timedelta(hours=max(1, token_realert_hours)):
+            return False
+        cooling_down = elapsed < timedelta(minutes=cooldown_minutes)
         meaningful_upgrade = result.score >= float(row["score"]) + score_upgrade
-        new_stage = result.stage != row["stage"]
-        # Do not turn one unchanged token into repeated alerts and correlated
-        # calibration samples merely because the cooldown expired.
-        return meaningful_upgrade or (new_stage and not cooling_down)
+        new_reawakening = result.stage == "REAWAKENING" and result.stage != row["stage"]
+        # A token gets one alert per 24h. A later repeat must represent a true
+        # reawakening (or a materially stronger reawakening), never a routine
+        # rescan or a second discovery source.
+        return not cooling_down and (
+            new_reawakening or (result.stage == "REAWAKENING" and meaningful_upgrade)
+        )
 
     def record_alert(
         self,

@@ -67,6 +67,8 @@ The anti-late gate rejects or penalizes candidates that are already extended, ab
 
 Outputs are `MONITOR`, `EARLY WATCH`, `STRONG WATCH`, or `AVOID LATE`. None of these outputs places an order.
 
+Telegram converts eligible outputs into one compact verdict line. Its bounded upside scenario combines score, buyer share, volume/liquidity churn, smart-wallet support, social evidence, stage, liquidity depth, and short-term extension. It is measured from the alert price, capped at 2.0x for WATCH and 2.8x for BUY, and is explicitly presented as a scenario rather than a guaranteed return.
+
 ## Forward outcomes and calibration
 
 Every sent alert stores its entry price, market cap, and liquidity. Alerted candidates stay in the active set until the first available observation after 15, 60, 360, and 1,440 minutes. Each horizon stores the best and worst sampled return available at that point (MFE/MAE), rather than reusing the eventual 24-hour extrema. Materially late samples are retained but excluded from calibration. After three successful empty market lookups, a disappeared pool is recorded as a terminal -100% outcome; provider/network failures do not count as confirmations. At a five-minute cadence these are observed excursions, not tick-perfect extrema.
@@ -81,6 +83,6 @@ This architecture closes the hourly/two-hour latency gap; it does not prove prof
 
 The free deployment uses a five-minute scan and two ten-minute health checks (one internal and one scheduled through GitHub Actions) to remain below Render's 15-minute idle timeout. The public repository's standard GitHub-hosted Actions do not consume paid minutes. Scheduled Actions can be delayed, which is why the internal check is retained as the primary keep-awake path.
 
-Free Render storage remains ephemeral. After a restart the scanner restores recent candidates from launch feeds and a 1,800-block RPC lookback, warms up for one cycle, and then resumes. Alert history from before the restart is not permanent, so an unusually timed restart can still cause a repeated alert later. Permanent deduplication would require an external durable datastore.
+Free Render storage remains ephemeral. After a fresh-state restart the scanner restores recent candidates from launch feeds and a 1,800-block RPC lookback and permanently marks that initial backlog as bootstrap data. It cannot emit a recycled ignition alert, although a later evidence-backed reawakening remains eligible. New post-start discoveries resume normally after warm-up. This removes routine redeploy repeats without introducing an external paid datastore.
 
 Social quality is limited to market/profile metadata unless `SCANNER_SIGNAL_OVERLAY_URL` is connected to an X/social listener. The automatic wallet cohort requires three completed observations by default, so it intentionally starts empty. These are explicit inputs, not hidden claims of profitability.

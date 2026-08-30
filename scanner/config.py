@@ -68,6 +68,7 @@ class ScannerConfig:
     strong_alert_score: float = 84.0
     alert_cooldown_minutes: int = 45
     alert_score_upgrade: float = 10.0
+    token_realert_hours: int = 24
     active_candidate_limit: int = 50
     active_max_age_hours: int = 720
     max_alerts_per_cycle: int = 3
@@ -143,6 +144,7 @@ class ScannerConfig:
             strong_alert_score=_float("SCANNER_STRONG_ALERT_SCORE", 84.0),
             alert_cooldown_minutes=_int("SCANNER_ALERT_COOLDOWN_MINUTES", 45),
             alert_score_upgrade=_float("SCANNER_ALERT_SCORE_UPGRADE", 10.0),
+            token_realert_hours=max(1, _int("SCANNER_TOKEN_REALERT_HOURS", 24)),
             active_candidate_limit=_int("SCANNER_ACTIVE_LIMIT", 50),
             active_max_age_hours=_int("SCANNER_ACTIVE_MAX_AGE_HOURS", 720),
             max_alerts_per_cycle=max(1, _int("SCANNER_MAX_ALERTS_PER_CYCLE", 3)),

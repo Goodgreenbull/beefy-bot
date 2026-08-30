@@ -20,7 +20,7 @@ class FakeEnricher:
     async def enrich(self, session, candidate):
         return MarketSnapshot(
             chain="base",
-            token_address=TOKEN,
+            token_address=candidate.token_address,
             price_usd=0.001,
             liquidity_usd=10_000,
             market_cap_usd=75_000,
@@ -76,3 +76,43 @@ class ScannerServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(alerts), 1)
         self.assertEqual(alerts[0][0], f"base:{TOKEN}")
         self.assertIsNone(telegram_health["last_error"])
+
+    async def test_fresh_deploy_backlog_cannot_repeat_as_a_new_launch(self):
+        state = SQLiteState(":memory:")
+        config = ScannerConfig(active_candidate_limit=5, min_alert_score=60, warmup_cycles=1)
+        alerts = []
+
+        async def capture(candidate, market, score):
+            alerts.append(candidate.key)
+
+        service = ScannerService(config, state, capture)
+        service.feeds = [FakeFeed()]
+        service.enricher = FakeEnricher()
+        try:
+            first = await service.run_cycle()
+            second = await service.run_cycle()
+
+            new_token = "0x9999999999999999999999999999999999999999"
+
+            class NewFeed:
+                name = "new-launch"
+
+                async def discover(self, session, scanner_state):
+                    return [
+                        Candidate(
+                            chain="base",
+                            token_address=new_token,
+                            source="bankr",
+                            symbol="NEW",
+                        )
+                    ]
+
+            service.feeds = [NewFeed()]
+            third = await service.run_cycle()
+        finally:
+            await service.stop()
+
+        self.assertEqual(first["alerts"], 0)
+        self.assertEqual(second["alerts"], 0)
+        self.assertEqual(third["alerts"], 1)
+        self.assertEqual(alerts, [f"base:{new_token}"])

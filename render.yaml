@@ -19,6 +19,8 @@ services:
         value: "84"
       - key: SCANNER_MAX_ALERTS_PER_CYCLE
         value: "3"
+      - key: SCANNER_TOKEN_REALERT_HOURS
+        value: "24"
       - key: SCANNER_WARMUP_CYCLES
         value: "1"
       - key: SCANNER_AUTO_CALIBRATE
