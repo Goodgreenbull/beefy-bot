@@ -10,14 +10,21 @@ import aiohttp
 from .config import ScannerConfig
 from .feeds import (
     BankrLaunchFeed,
+    BaselineLaunchFeed,
+    ClankerLaunchFeed,
+    DexScreenerProfilesFeed,
     DexScreenerEnricher,
+    FactoryLaunchFeed,
     FlaunchFeed,
     GeckoTerminalNewPoolsFeed,
     RpcPairFeed,
     SignalOverlay,
     SmartWalletMonitor,
+    TokenRiskEnricher,
     _integer,
     _number,
+    _timestamp,
+    platform_factory_specs,
 )
 from .models import Candidate, MarketSnapshot, ScoreResult
 from .scoring import SignalScorer
@@ -40,13 +47,29 @@ class ScannerService:
         self.session: aiohttp.ClientSession | None = None
         self.lock = asyncio.Lock()
         self.enricher = DexScreenerEnricher(config)
+        self.risk_enricher = TokenRiskEnricher(config)
         self.scorer = SignalScorer(config)
         self.overlay = SignalOverlay(config.overlay_url)
         self.smart_wallet_monitor = SmartWalletMonitor(config)
-        self.feeds = [BankrLaunchFeed(config), FlaunchFeed(config)]
+        self.feeds = [
+            BankrLaunchFeed(config),
+            FlaunchFeed(config),
+            ClankerLaunchFeed(),
+            BaselineLaunchFeed(),
+            DexScreenerProfilesFeed(),
+        ]
         self.feeds.extend(GeckoTerminalNewPoolsFeed(network) for network in config.gecko_networks)
         self.feeds.extend(
             [
+                FactoryLaunchFeed(
+                    "base", config.base_rpc_url, platform_factory_specs(config, "base"), config
+                ),
+                FactoryLaunchFeed(
+                    "robinhood",
+                    config.robinhood_rpc_url,
+                    platform_factory_specs(config, "robinhood"),
+                    config,
+                ),
                 RpcPairFeed("base", config.base_rpc_url, config),
                 RpcPairFeed("robinhood", config.robinhood_rpc_url, config),
             ]
@@ -58,6 +81,7 @@ class ScannerService:
             "discovered": 0,
             "enriched": 0,
             "alerts": 0,
+            "outcomes": 0,
             "errors": 0,
         }
 
@@ -138,6 +162,8 @@ class ScannerService:
             candidates = self.state.list_active_candidates(
                 self.config.active_max_age_hours, self.config.active_candidate_limit
             )
+            outcome_candidates = self.state.list_outcome_candidates(self.config.outcome_candidate_limit)
+            candidates = list({candidate.key: candidate for candidate in candidates + outcome_candidates}.values())
             overlay_task = asyncio.create_task(self.overlay.fetch(self.session))
             wallet_task = asyncio.create_task(
                 self.smart_wallet_monitor.collect(self.session, self.state, candidates)
@@ -156,8 +182,11 @@ class ScannerService:
                 wallet_signals = {}
                 self.state.mark_feed_error("smart-wallets", error)
 
+            thresholds = self.state.calibrated_thresholds(self.config)
             enriched_count = 0
             alert_count = 0
+            outcome_count = 0
+            prepared: list[tuple[Candidate, MarketSnapshot, list[MarketSnapshot], ScoreResult]] = []
             for candidate, snapshot in enriched:
                 if snapshot is None:
                     continue
@@ -168,17 +197,67 @@ class ScannerService:
                     candidate.name = str(snapshot.raw["name"])
                 if snapshot.raw.get("symbol"):
                     candidate.symbol = str(snapshot.raw["symbol"])
+                pair_created_at = _timestamp(snapshot.raw.get("pair_created_at"))
+                if pair_created_at and candidate.launch_at is None:
+                    candidate.launch_at = pair_created_at
                 if snapshot.pair_address:
                     candidate.pair_address = snapshot.pair_address
+                snapshot.social_links = max(
+                    snapshot.social_links,
+                    _integer(candidate.metadata.get("profile_social_links"), 0),
+                )
                 self.state.upsert_candidate(candidate)
                 self._apply_external_signals(
                     snapshot,
                     overlays.get(candidate.key),
                     wallet_signals.get(candidate.key),
                 )
+                candidate.metadata["identity_risk"] = self.state.identity_risk(candidate)
+                self.state.upsert_candidate(candidate)
                 history = self.state.recent_snapshots(candidate.key)
-                result = self.scorer.score(candidate, snapshot, history)
+                cached_risk = self.state.get_security_profile(
+                    candidate.key, self.config.security_cache_minutes
+                )
+                if cached_risk:
+                    snapshot.raw["security"] = cached_risk.to_record()
+                pre_result = self.scorer.score(
+                    candidate,
+                    snapshot,
+                    history,
+                    min_alert_score=thresholds["watch"],
+                    strong_alert_score=thresholds["buy"],
+                )
+                prepared.append((candidate, snapshot, history, pre_result))
+
+            risk_targets = [
+                item for item in sorted(prepared, key=lambda item: item[3].score, reverse=True)
+                if not (item[1].raw.get("security") or {}).get("checked")
+                and item[3].score >= self.config.security_check_min_score
+            ][: self.config.max_security_checks_per_cycle]
+            checked_profiles = await asyncio.gather(
+                *(self.risk_enricher.check(self.session, item[0]) for item in risk_targets),
+                return_exceptions=True,
+            )
+            for item, profile in zip(risk_targets, checked_profiles):
+                candidate, snapshot, _, _ = item
+                if isinstance(profile, Exception):
+                    self.state.mark_feed_error("token-safety", profile)
+                    continue
+                snapshot.raw["security"] = profile.to_record()
+                if profile.checked:
+                    self.state.upsert_security_profile(profile)
+                    self.state.mark_feed_success("token-safety", 1)
+
+            for candidate, snapshot, history, _ in prepared:
+                result = self.scorer.score(
+                    candidate,
+                    snapshot,
+                    history,
+                    min_alert_score=thresholds["watch"],
+                    strong_alert_score=thresholds["buy"],
+                )
                 self.state.add_snapshot(candidate.key, snapshot)
+                outcome_count += self.state.update_alert_outcomes(candidate.key, snapshot)
                 self.state.update_score(candidate.key, result)
                 if (
                     warmup_complete
@@ -195,7 +274,17 @@ class ScannerService:
                     try:
                         await self.alert_callback(candidate, snapshot, result)
                         self.state.mark_feed_success("telegram-alerts", 1)
-                        self.state.record_alert(candidate.key, result)
+                        alert_id = self.state.record_alert(candidate.key, result, snapshot)
+                        try:
+                            early_buyers = await self.smart_wallet_monitor.observe_early_buyers(
+                                self.session, candidate, snapshot
+                            )
+                            self.state.record_alert_wallets(
+                                alert_id, candidate.chain, early_buyers
+                            )
+                            self.state.mark_feed_success("wallet-curation", len(early_buyers))
+                        except Exception as error:
+                            self.state.mark_feed_error("wallet-curation", error)
                         alert_count += 1
                     except Exception as error:
                         self.state.mark_feed_error("telegram-alerts", error)
@@ -210,6 +299,11 @@ class ScannerService:
                 "discovered": len(discovered),
                 "enriched": enriched_count,
                 "alerts": alert_count,
+                "outcomes": outcome_count,
+                "watch_threshold": thresholds["watch"],
+                "buy_threshold": thresholds["buy"],
+                "calibration_samples": thresholds["samples"],
+                "calibrated": thresholds["calibrated"],
                 "errors": sum(1 for item in self.state.health() if item.get("last_error")),
             }
             last_prune = _integer(self.state.get_cursor("maintenance:last_prune"), 0)
@@ -220,4 +314,18 @@ class ScannerService:
             return self.status()
 
     def status(self) -> dict:
-        return {**self.last_status, **self.state.stats(), "feeds": self.state.health()}
+        wallet_report = self.state.smart_wallet_report()
+        wallet_report["qualified"] = len(
+            self.state.curated_smart_wallets(
+                self.config.smart_wallet_min_observations,
+                self.config.smart_wallet_min_win_rate,
+                self.config.smart_wallet_min_average_return,
+            )
+        )
+        return {
+            **self.last_status,
+            **self.state.stats(),
+            "outcome_report": self.state.outcome_report(),
+            "smart_wallet_report": wallet_report,
+            "feeds": self.state.health(),
+        }

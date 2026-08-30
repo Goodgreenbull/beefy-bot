@@ -8,13 +8,14 @@ It does **not** hold a wallet, sign transactions, or auto-trade. The scanner pro
 
 The previous alpha job sampled promoted/trending tokens and compared 24-hour volume every two hours. That was too late for first-leg discovery and lost all state on restart.
 
-The free profile scans every five minutes and separates the job into:
+The quality-v2 free profile scans every five minutes and separates the job into:
 
-1. Direct discovery from Bankr, Flaunch, GeckoTerminal new pools, and standard V2/V3 pool-creation events on Base and Robinhood Chain.
-2. SQLite state for candidates, rolling market snapshots, feed cursors, scores, feed health, and sent-alert deduplication while the free instance remains alive.
-3. DexScreener market enrichment plus optional social and smart-wallet overlays.
-4. Transparent ignition/reawakening scoring with an anti-late gate.
-5. Concise Telegram alerts with score, stage, age, liquidity, market cap, 5-minute flow, drivers, and invalidation.
+1. Direct discovery from Bankr, Flaunch, Clanker, Baseline, verified o1/B20 factory events, GeckoTerminal, DexScreener profiles, and V2/V3 pool events on Base and Robinhood Chain.
+2. SQLite state for candidates, rolling market snapshots, feed cursors, scores, feed health, alert outcomes, and deduplication while the free instance remains alive.
+3. DexScreener enrichment plus free GoPlus and Honeypot.is contract screening.
+4. Transparent ignition/reawakening scoring with anti-late, identity-copy, serial-deployer, concentration, tax, honeypot, and dangerous-admin filters.
+5. Concise Telegram WATCH/BUY verdicts with score, stage, age, liquidity, market cap, 5-minute flow, contract-check status, drivers, and invalidation.
+6. Every alert is re-sampled after 15 minutes, one hour, six hours, and 24 hours. Beefy records return, observed maximum favourable excursion (MFE), and observed maximum adverse excursion (MAE).
 
 The old scheduled daily alpha report and two-hour breakout alert are no longer scheduled, so there is one automated signal path. `/trending` and `/lookup` remain available as manual research tools.
 
@@ -51,7 +52,7 @@ Render sleeps a free web service after 15 minutes without inbound traffic. This 
 - Beefy Bot calls its own public `/health` endpoint every ten minutes.
 - `.github/workflows/keep-render-awake.yml` calls the same endpoint every ten minutes from GitHub Actions. The repository is public, so standard GitHub-hosted Actions are free. Scheduled workflows only begin after this workflow is on the default branch.
 
-The scanner defaults to a five-minute cadence, enriches at most 50 active candidates, and sends at most three alerts per cycle. Seventy percent of each cycle is reserved for the newest candidates and thirty percent rotates through older candidates so reawakenings are not starved by new launches.
+The scanner defaults to a five-minute cadence, enriches at most 50 active candidates plus 50 alerted tokens awaiting outcomes, runs at most 12 new contract checks per cycle, and sends at most three alerts per cycle. Outcome candidates are ordered by their next due measurement so an older alert is not starved by newer ones. Seventy percent of each normal cycle is reserved for the newest candidates and thirty percent rotates through older candidates so reawakenings are not starved by new launches.
 
 Render can still restart a free service at any time and its local filesystem is ephemeral. On a fresh state database, Beefy Bot suppresses the first alert cycle, rebuilds candidates from the direct feeds and a 1,800-block RPC lookback, then resumes alerts. This is a recovery strategy rather than permanent storage, but it avoids introducing a paid database.
 
@@ -62,6 +63,7 @@ No wallet key is needed or wanted.
 Admin-only Telegram commands:
 
 - `/scannerstatus` — last cycle, 24-hour candidates/snapshots/alerts, and feed health.
+- `/signalstats` — 15m/1h/6h/24h sample counts, WATCH/BUY 24-hour win rate, median return, MFE/MAE, live thresholds, and wallet-cohort progress.
 - `/scannow` — run one cycle immediately.
 - `/alerttest` — send a clearly labelled test message to the configured signal destination.
 
@@ -71,7 +73,15 @@ Existing community commands and moderation remain in `server.py`.
 
 ### Curated smart wallets
 
-Set `SCANNER_SMART_WALLETS` to comma-separated public addresses. The scanner counts ERC-20 transfers into and out of those wallets for active candidates on Base and Robinhood Chain.
+Set `SCANNER_SMART_WALLETS` to comma-separated, manually verified public addresses. The scanner counts ERC-20 transfers into and out of those wallets for active candidates on Base and Robinhood Chain.
+
+Beefy also records the transaction senders buying an alerted token from its pool. It does not promote a wallet from one lucky trade: by default the wallet must have at least three completed 24-hour observations, at least a 60% rate of +20% winners, and at least +10% average 24-hour return. The resulting cohort is then monitored automatically. Wallet addresses are public data; no wallet credential is used.
+
+### Additional launch factories
+
+The repository contains verified first-party o1/B20 production factories. Pools.fun launches also enter through its documented Sushi V3 pool layer. Baseline and Clanker use their public first-party feeds.
+
+For a launcher whose first-party factory is not published or cannot yet be verified, `SCANNER_FACTORY_FEEDS_JSON` accepts a platform name, factory address, event topic, and indexed-field positions. This is the safe path for a current BaseStonk/Stonks or future Pools.fun factory once its official address is published; the repository deliberately does not hard-code scraped or stale addresses.
 
 ### Social/smart-wallet overlay
 
@@ -101,6 +111,7 @@ This lets an X/listening service or wallet analytics provider contribute signals
 python -m compileall server.py scanner tests
 python -m unittest discover -s tests -v
 python -m scanner --state scanner_dry_run.sqlite3 --limit 5
+python -m scripts.live_validate
 ```
 
 See `ARCHITECTURE.md` for scoring, deduplication, feed behavior, and known limitations.

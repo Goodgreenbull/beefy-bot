@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from statistics import median
 from typing import Any
 
-from .models import Candidate, MarketSnapshot, ScoreResult
+from .models import Candidate, MarketSnapshot, ScoreResult, SecurityProfile
 
 
 def _dt(value: str | None) -> datetime | None:
@@ -23,6 +25,7 @@ class SQLiteState:
         self.path = str(db_path)
         self.connection = sqlite3.connect(self.path, check_same_thread=False)
         self.connection.row_factory = sqlite3.Row
+        self.connection.execute("PRAGMA foreign_keys=ON")
         self.connection.execute("PRAGMA journal_mode=WAL")
         self.connection.execute("PRAGMA synchronous=NORMAL")
         self._create_schema()
@@ -90,11 +93,58 @@ class SQLiteState:
                 stage TEXT NOT NULL,
                 signal TEXT NOT NULL,
                 score REAL NOT NULL,
+                entry_price_usd REAL,
+                entry_market_cap_usd REAL,
+                entry_liquidity_usd REAL,
+                mfe_pct REAL,
+                mae_pct REAL,
                 payload_json TEXT NOT NULL,
                 FOREIGN KEY(candidate_key) REFERENCES candidates(candidate_key)
             );
             CREATE INDEX IF NOT EXISTS idx_alerts_candidate_time
                 ON alerts(candidate_key, sent_at DESC);
+
+            CREATE TABLE IF NOT EXISTS alert_outcomes (
+                alert_id INTEGER NOT NULL,
+                horizon_minutes INTEGER NOT NULL,
+                due_at TEXT NOT NULL,
+                captured_at TEXT NOT NULL,
+                price_usd REAL,
+                market_cap_usd REAL,
+                liquidity_usd REAL,
+                return_pct REAL,
+                PRIMARY KEY(alert_id, horizon_minutes),
+                FOREIGN KEY(alert_id) REFERENCES alerts(id) ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS idx_alert_outcomes_horizon
+                ON alert_outcomes(horizon_minutes, captured_at DESC);
+
+            CREATE TABLE IF NOT EXISTS alert_wallets (
+                alert_id INTEGER NOT NULL,
+                chain TEXT NOT NULL,
+                wallet TEXT NOT NULL,
+                observed_at TEXT NOT NULL,
+                PRIMARY KEY(alert_id, chain, wallet),
+                FOREIGN KEY(alert_id) REFERENCES alerts(id) ON DELETE CASCADE
+            );
+
+            CREATE TABLE IF NOT EXISTS wallet_reputation (
+                chain TEXT NOT NULL,
+                wallet TEXT NOT NULL,
+                evaluated_alerts INTEGER NOT NULL DEFAULT 0,
+                wins INTEGER NOT NULL DEFAULT 0,
+                total_return_pct REAL NOT NULL DEFAULT 0,
+                last_return_pct REAL,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY(chain, wallet)
+            );
+
+            CREATE TABLE IF NOT EXISTS security_profiles (
+                candidate_key TEXT PRIMARY KEY,
+                checked_at TEXT NOT NULL,
+                payload_json TEXT NOT NULL,
+                FOREIGN KEY(candidate_key) REFERENCES candidates(candidate_key) ON DELETE CASCADE
+            );
 
             CREATE TABLE IF NOT EXISTS cursors (
                 cursor_key TEXT PRIMARY KEY,
@@ -111,7 +161,17 @@ class SQLiteState:
             );
             """
         )
+        self._ensure_column("alerts", "entry_price_usd", "REAL")
+        self._ensure_column("alerts", "entry_market_cap_usd", "REAL")
+        self._ensure_column("alerts", "entry_liquidity_usd", "REAL")
+        self._ensure_column("alerts", "mfe_pct", "REAL")
+        self._ensure_column("alerts", "mae_pct", "REAL")
         self.connection.commit()
+
+    def _ensure_column(self, table: str, column: str, declaration: str) -> None:
+        columns = {row["name"] for row in self.connection.execute(f"PRAGMA table_info({table})")}
+        if column not in columns:
+            self.connection.execute(f"ALTER TABLE {table} ADD COLUMN {column} {declaration}")
 
     def upsert_candidate(self, candidate: Candidate) -> None:
         now = datetime.now(timezone.utc).isoformat()
@@ -159,6 +219,22 @@ class SQLiteState:
         )
         self.connection.commit()
 
+    @staticmethod
+    def _candidate_from_row(row: sqlite3.Row) -> Candidate:
+        return Candidate(
+            chain=row["chain"],
+            token_address=row["token_address"],
+            pair_address=row["pair_address"],
+            source=row["source"],
+            discovered_at=_dt(row["first_seen_at"]) or datetime.now(timezone.utc),
+            launch_at=_dt(row["launch_at"]),
+            name=row["name"],
+            symbol=row["symbol"],
+            deployer=row["deployer"],
+            chart_url=row["chart_url"],
+            metadata=json.loads(row["metadata_json"] or "{}"),
+        )
+
     def list_active_candidates(self, max_age_hours: int, limit: int) -> list[Candidate]:
         cutoff = (datetime.now(timezone.utc) - timedelta(hours=max_age_hours)).isoformat()
         fresh_limit = max(1, min(limit, int(limit * 0.7)))
@@ -200,22 +276,43 @@ class SQLiteState:
                 parameters,
             ).fetchall()
             rows.extend(recheck_rows)
-        return [
-            Candidate(
-                chain=row["chain"],
-                token_address=row["token_address"],
-                pair_address=row["pair_address"],
-                source=row["source"],
-                discovered_at=_dt(row["first_seen_at"]) or datetime.now(timezone.utc),
-                launch_at=_dt(row["launch_at"]),
-                name=row["name"],
-                symbol=row["symbol"],
-                deployer=row["deployer"],
-                chart_url=row["chart_url"],
-                metadata=json.loads(row["metadata_json"] or "{}"),
+        return [self._candidate_from_row(row) for row in rows]
+
+    def list_outcome_candidates(self, limit: int = 50) -> list[Candidate]:
+        cutoff = (datetime.now(timezone.utc) - timedelta(hours=25)).isoformat()
+        rows = self.connection.execute(
+            """
+            WITH horizons(minutes) AS (VALUES (15), (60), (360), (1440)),
+            pending_alerts AS (
+                SELECT
+                    a.candidate_key,
+                    MIN(strftime('%s', a.sent_at) + horizons.minutes * 60) AS next_due_epoch
+                FROM alerts a
+                CROSS JOIN horizons
+                LEFT JOIN alert_outcomes o
+                  ON o.alert_id = a.id AND o.horizon_minutes = horizons.minutes
+                WHERE a.sent_at >= ?
+                  AND a.entry_price_usd IS NOT NULL
+                  AND o.alert_id IS NULL
+                GROUP BY a.id, a.candidate_key
+            ),
+            candidate_due AS (
+                SELECT candidate_key, MIN(next_due_epoch) AS next_due_epoch
+                FROM pending_alerts
+                GROUP BY candidate_key
             )
-            for row in rows
-        ]
+            SELECT c.*, candidate_due.next_due_epoch
+            FROM candidates c
+            JOIN candidate_due ON candidate_due.candidate_key = c.candidate_key
+            ORDER BY
+                CASE WHEN candidate_due.next_due_epoch <= strftime('%s', 'now') THEN 0 ELSE 1 END,
+                ABS(candidate_due.next_due_epoch - strftime('%s', 'now')),
+                candidate_due.next_due_epoch
+            LIMIT ?
+            """,
+            (cutoff, limit),
+        ).fetchall()
+        return [self._candidate_from_row(row) for row in rows]
 
     def add_snapshot(self, candidate_key: str, snapshot: MarketSnapshot) -> None:
         self.connection.execute(
@@ -296,6 +393,114 @@ class SQLiteState:
             for row in rows
         ]
 
+    def get_security_profile(
+        self, candidate_key: str, max_age_minutes: int
+    ) -> SecurityProfile | None:
+        cutoff = (datetime.now(timezone.utc) - timedelta(minutes=max_age_minutes)).isoformat()
+        row = self.connection.execute(
+            "SELECT checked_at, payload_json FROM security_profiles WHERE candidate_key = ? AND checked_at >= ?",
+            (candidate_key, cutoff),
+        ).fetchone()
+        if not row:
+            return None
+        payload = json.loads(row["payload_json"] or "{}")
+        payload["checked_at"] = _dt(row["checked_at"]) or datetime.now(timezone.utc)
+        payload["providers"] = tuple(payload.get("providers") or ())
+        payload["flags"] = tuple(payload.get("flags") or ())
+        try:
+            return SecurityProfile(**payload)
+        except TypeError:
+            return None
+
+    def upsert_security_profile(self, profile: SecurityProfile) -> None:
+        payload = profile.to_record()
+        payload.pop("checked_at", None)
+        self.connection.execute(
+            """
+            INSERT INTO security_profiles(candidate_key, checked_at, payload_json) VALUES (?, ?, ?)
+            ON CONFLICT(candidate_key) DO UPDATE SET
+                checked_at = excluded.checked_at,
+                payload_json = excluded.payload_json
+            """,
+            (
+                profile.key,
+                profile.checked_at.isoformat(),
+                json.dumps(payload, separators=(",", ":")),
+            ),
+        )
+        self.connection.commit()
+
+    @staticmethod
+    def _normalise_identity(value: str | None) -> str:
+        translation = str.maketrans({"0": "o", "1": "i", "3": "e", "4": "a", "5": "s", "7": "t"})
+        return re.sub(r"[^a-z]", "", (value or "").lower().translate(translation))
+
+    def identity_risk(self, candidate: Candidate, lookback_days: int = 7) -> dict[str, Any]:
+        name = self._normalise_identity(candidate.name)
+        symbol = self._normalise_identity(candidate.symbol)
+        missing_identity = not name and not symbol
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=lookback_days)).isoformat()
+        rows = (
+            []
+            if missing_identity
+            else self.connection.execute(
+                """
+                SELECT candidate_key, name, symbol FROM candidates
+                WHERE first_seen_at >= ? AND candidate_key != ?
+                ORDER BY first_seen_at DESC LIMIT 2000
+                """,
+                (cutoff, candidate.key),
+            ).fetchall()
+        )
+        exact_name = 0
+        exact_symbol = 0
+        exact_both = 0
+        for row in rows:
+            other_name = self._normalise_identity(row["name"])
+            other_symbol = self._normalise_identity(row["symbol"])
+            same_name = bool(name and other_name == name)
+            same_symbol = bool(symbol and other_symbol == symbol)
+            exact_name += int(same_name)
+            exact_symbol += int(same_symbol)
+            exact_both += int(same_name and same_symbol)
+        penalty = 4.0 if missing_identity else min(
+            24.0,
+            exact_both * 12.0
+            + max(0, exact_symbol - exact_both) * 4.0
+            + max(0, exact_name - exact_both) * 3.0,
+        )
+        serial_launches = 0
+        if candidate.deployer:
+            serial_launches = int(
+                self.connection.execute(
+                    """
+                    SELECT COUNT(*) FROM candidates
+                    WHERE first_seen_at >= ? AND candidate_key != ? AND deployer = ?
+                    """,
+                    (cutoff, candidate.key, candidate.deployer),
+                ).fetchone()[0]
+            )
+            if serial_launches >= 3:
+                penalty += min(15.0, 3.0 + (serial_launches - 3) * 2.0)
+        reasons: list[str] = []
+        if missing_identity:
+            reasons.append("missing token identity")
+        elif exact_both:
+            reasons.append(f"{exact_both} recent exact name/ticker duplicate(s)")
+        elif exact_symbol or exact_name:
+            reasons.append(f"recent identity overlap ({exact_symbol} ticker, {exact_name} name)")
+        else:
+            reasons.append("no recent exact identity duplicates")
+        if serial_launches >= 3:
+            reasons.append(f"deployer launched {serial_launches} other recent tokens")
+        return {
+            "copycat_penalty": round(penalty, 1),
+            "reason": "; ".join(reasons),
+            "matches": max(exact_name, exact_symbol),
+            "exact_both": exact_both,
+            "serial_deployer_launches": serial_launches,
+        }
+
     def update_score(self, candidate_key: str, result: ScoreResult) -> None:
         self.connection.execute(
             "UPDATE candidates SET last_score = ?, last_stage = ?, last_signal = ? WHERE candidate_key = ?",
@@ -322,19 +527,261 @@ class SQLiteState:
         new_stage = result.stage != row["stage"]
         return meaningful_upgrade or (new_stage and not cooling_down) or not cooling_down
 
-    def record_alert(self, candidate_key: str, result: ScoreResult) -> None:
+    def record_alert(
+        self,
+        candidate_key: str,
+        result: ScoreResult,
+        snapshot: MarketSnapshot | None = None,
+    ) -> int:
+        market_cap = (snapshot.market_cap_usd or snapshot.fdv_usd) if snapshot else None
         self.connection.execute(
-            "INSERT INTO alerts(candidate_key, sent_at, stage, signal, score, payload_json) VALUES (?, ?, ?, ?, ?, ?)",
+            """
+            INSERT INTO alerts(
+                candidate_key, sent_at, stage, signal, score,
+                entry_price_usd, entry_market_cap_usd, entry_liquidity_usd,
+                mfe_pct, mae_pct, payload_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
             (
                 candidate_key,
                 datetime.now(timezone.utc).isoformat(),
                 result.stage,
                 result.signal,
                 result.score,
+                snapshot.price_usd if snapshot else None,
+                market_cap,
+                snapshot.liquidity_usd if snapshot else None,
+                0.0 if snapshot and snapshot.price_usd else None,
+                0.0 if snapshot and snapshot.price_usd else None,
                 json.dumps(result.to_dict(), separators=(",", ":")),
             ),
         )
+        alert_id = int(self.connection.execute("SELECT last_insert_rowid()").fetchone()[0])
         self.connection.commit()
+        return alert_id
+
+    def update_alert_outcomes(self, candidate_key: str, snapshot: MarketSnapshot) -> int:
+        if not snapshot.price_usd or snapshot.price_usd <= 0:
+            return 0
+        cutoff = (snapshot.captured_at - timedelta(hours=25)).isoformat()
+        rows = self.connection.execute(
+            """
+            SELECT id, sent_at, entry_price_usd, mfe_pct, mae_pct
+            FROM alerts
+            WHERE candidate_key = ? AND sent_at >= ? AND entry_price_usd > 0
+            """,
+            (candidate_key, cutoff),
+        ).fetchall()
+        inserted = 0
+        market_cap = snapshot.market_cap_usd or snapshot.fdv_usd
+        horizons = (15, 60, 360, 1440)
+        for row in rows:
+            sent_at = _dt(row["sent_at"])
+            if not sent_at:
+                continue
+            return_pct = ((snapshot.price_usd / float(row["entry_price_usd"])) - 1.0) * 100.0
+            mfe = max(float(row["mfe_pct"] or 0.0), return_pct)
+            mae = min(float(row["mae_pct"] or 0.0), return_pct)
+            self.connection.execute(
+                "UPDATE alerts SET mfe_pct = ?, mae_pct = ? WHERE id = ?",
+                (mfe, mae, row["id"]),
+            )
+            elapsed_minutes = (snapshot.captured_at - sent_at).total_seconds() / 60.0
+            for horizon in horizons:
+                if elapsed_minutes < horizon:
+                    continue
+                cursor = self.connection.execute(
+                    """
+                    INSERT OR IGNORE INTO alert_outcomes(
+                        alert_id, horizon_minutes, due_at, captured_at,
+                        price_usd, market_cap_usd, liquidity_usd, return_pct
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        row["id"],
+                        horizon,
+                        (sent_at + timedelta(minutes=horizon)).isoformat(),
+                        snapshot.captured_at.isoformat(),
+                        snapshot.price_usd,
+                        market_cap,
+                        snapshot.liquidity_usd,
+                        return_pct,
+                    ),
+                )
+                was_inserted = cursor.rowcount > 0
+                inserted += int(was_inserted)
+                if was_inserted and horizon == 1440:
+                    self._update_wallet_reputation(int(row["id"]), return_pct)
+        self.connection.commit()
+        return inserted
+
+    def record_alert_wallets(self, alert_id: int, chain: str, wallets: set[str]) -> int:
+        now = datetime.now(timezone.utc).isoformat()
+        inserted = 0
+        for wallet in wallets:
+            normalised = wallet.strip().lower()
+            if not normalised.startswith("0x") or len(normalised) != 42:
+                continue
+            cursor = self.connection.execute(
+                """
+                INSERT OR IGNORE INTO alert_wallets(alert_id, chain, wallet, observed_at)
+                VALUES (?, ?, ?, ?)
+                """,
+                (alert_id, chain.lower(), normalised, now),
+            )
+            inserted += int(cursor.rowcount > 0)
+        self.connection.commit()
+        return inserted
+
+    def _update_wallet_reputation(self, alert_id: int, return_pct: float) -> None:
+        rows = self.connection.execute(
+            "SELECT chain, wallet FROM alert_wallets WHERE alert_id = ?",
+            (alert_id,),
+        ).fetchall()
+        now = datetime.now(timezone.utc).isoformat()
+        # Small tolerance avoids classifying a mathematically exact +20% as a
+        # loss because binary floating point may represent it as 19.9999999.
+        win = int(return_pct >= 19.999)
+        for row in rows:
+            self.connection.execute(
+                """
+                INSERT INTO wallet_reputation(
+                    chain, wallet, evaluated_alerts, wins, total_return_pct,
+                    last_return_pct, updated_at
+                ) VALUES (?, ?, 1, ?, ?, ?, ?)
+                ON CONFLICT(chain, wallet) DO UPDATE SET
+                    evaluated_alerts = wallet_reputation.evaluated_alerts + 1,
+                    wins = wallet_reputation.wins + excluded.wins,
+                    total_return_pct = wallet_reputation.total_return_pct + excluded.total_return_pct,
+                    last_return_pct = excluded.last_return_pct,
+                    updated_at = excluded.updated_at
+                """,
+                (row["chain"], row["wallet"], win, return_pct, return_pct, now),
+            )
+
+    def curated_smart_wallets(
+        self,
+        min_observations: int = 3,
+        min_win_rate: float = 0.60,
+        min_average_return: float = 10.0,
+        chain: str | None = None,
+    ) -> set[str]:
+        chain_filter = "AND chain = ?" if chain else ""
+        parameters: list[Any] = [min_observations, min_win_rate, min_average_return]
+        if chain:
+            parameters.append(chain.lower())
+        rows = self.connection.execute(
+            f"""
+            SELECT wallet FROM wallet_reputation
+            WHERE evaluated_alerts >= ?
+              AND CAST(wins AS REAL) / evaluated_alerts >= ?
+              AND total_return_pct / evaluated_alerts >= ?
+              {chain_filter}
+            """,
+            parameters,
+        ).fetchall()
+        return {str(row["wallet"]).lower() for row in rows}
+
+    def smart_wallet_report(self) -> dict[str, int]:
+        return {
+            "observed": int(
+                self.connection.execute("SELECT COUNT(DISTINCT chain || ':' || wallet) FROM alert_wallets").fetchone()[0]
+            ),
+            "evaluated": int(
+                self.connection.execute("SELECT COUNT(*) FROM wallet_reputation").fetchone()[0]
+            ),
+        }
+
+    def outcome_report(self) -> dict[str, Any]:
+        outcome_counts = {
+            int(row["horizon_minutes"]): int(row["count"])
+            for row in self.connection.execute(
+                "SELECT horizon_minutes, COUNT(*) AS count FROM alert_outcomes GROUP BY horizon_minutes"
+            ).fetchall()
+        }
+        rows = self.connection.execute(
+            """
+            SELECT a.signal, o.horizon_minutes, o.return_pct, a.mfe_pct, a.mae_pct
+            FROM alert_outcomes o JOIN alerts a ON a.id = o.alert_id
+            WHERE o.return_pct IS NOT NULL
+            ORDER BY o.captured_at DESC LIMIT 1000
+            """
+        ).fetchall()
+        grouped: dict[str, dict[int, list[sqlite3.Row]]] = {}
+        for row in rows:
+            grouped.setdefault(row["signal"], {}).setdefault(int(row["horizon_minutes"]), []).append(row)
+        summaries: dict[str, dict[int, dict[str, float]]] = {}
+        for signal, horizons in grouped.items():
+            summaries[signal] = {}
+            for horizon, values in horizons.items():
+                returns = [float(value["return_pct"]) for value in values]
+                mfes = [float(value["mfe_pct"] or 0.0) for value in values]
+                maes = [float(value["mae_pct"] or 0.0) for value in values]
+                summaries[signal][horizon] = {
+                    "samples": len(values),
+                    "win_rate": round(sum(item > 0 for item in returns) / len(returns) * 100.0, 1),
+                    "median_return": round(median(returns), 1),
+                    "median_mfe": round(median(mfes), 1),
+                    "median_mae": round(median(maes), 1),
+                }
+        tracked = int(self.connection.execute("SELECT COUNT(*) FROM alerts WHERE entry_price_usd IS NOT NULL").fetchone()[0])
+        return {"tracked_alerts": tracked, "outcome_counts": outcome_counts, "signals": summaries}
+
+    def calibrated_thresholds(self, config: Any) -> dict[str, Any]:
+        defaults = {
+            "watch": float(config.min_alert_score),
+            "buy": float(config.strong_alert_score),
+            "samples": 0,
+            "calibrated": False,
+        }
+        if not getattr(config, "auto_calibrate", False):
+            return defaults
+        rows = self.connection.execute(
+            """
+            SELECT a.score, a.mfe_pct, a.mae_pct, o.return_pct
+            FROM alert_outcomes o JOIN alerts a ON a.id = o.alert_id
+            WHERE o.horizon_minutes = 1440 AND o.return_pct IS NOT NULL
+            ORDER BY o.captured_at DESC LIMIT 200
+            """
+        ).fetchall()
+        sample_count = len(rows)
+        defaults["samples"] = sample_count
+        minimum = int(getattr(config, "calibration_min_samples", 30))
+        if sample_count < minimum:
+            return defaults
+
+        def metrics(cutoff: int) -> tuple[int, float, float, float, float]:
+            selected = [row for row in rows if float(row["score"]) >= cutoff]
+            if not selected:
+                return 0, 0.0, 0.0, 0.0, 0.0
+            returns = [float(row["return_pct"]) for row in selected]
+            return (
+                len(selected),
+                sum(value > 0 for value in returns) / len(returns),
+                median(returns),
+                median(float(row["mfe_pct"] or 0.0) for row in selected),
+                median(float(row["mae_pct"] or 0.0) for row in selected),
+            )
+
+        watch = None
+        for cutoff in range(int(config.min_alert_score), 89):
+            count, win_rate, med_return, med_mfe, _ = metrics(cutoff)
+            if count >= max(15, minimum // 2) and win_rate >= 0.35 and med_return >= 0 and med_mfe >= 20:
+                watch = float(cutoff)
+                break
+        if watch is None:
+            watch = min(88.0, float(config.min_alert_score) + 4.0)
+
+        buy = None
+        start = max(int(config.strong_alert_score), int(watch) + 6)
+        for cutoff in range(start, 95):
+            count, win_rate, med_return, med_mfe, med_mae = metrics(cutoff)
+            if count >= max(10, minimum // 3) and win_rate >= 0.50 and med_return >= 10 and med_mfe >= 35 and med_mae > -45:
+                buy = float(cutoff)
+                break
+        if buy is None:
+            buy = min(94.0, max(float(config.strong_alert_score) + 4.0, watch + 6.0))
+        return {"watch": watch, "buy": buy, "samples": sample_count, "calibrated": True}
 
     def get_cursor(self, key: str) -> str | None:
         row = self.connection.execute("SELECT cursor_value FROM cursors WHERE cursor_key = ?", (key,)).fetchone()
@@ -392,12 +839,23 @@ class SQLiteState:
             "alerts_24h": self.connection.execute(
                 "SELECT COUNT(*) FROM alerts WHERE sent_at >= ?", (cutoff,)
             ).fetchone()[0],
+            "outcomes_24h": self.connection.execute(
+                "SELECT COUNT(*) FROM alert_outcomes WHERE captured_at >= ?", (cutoff,)
+            ).fetchone()[0],
         }
 
     def prune(self, snapshot_days: int = 7, alert_days: int = 90) -> None:
         snapshot_cutoff = (datetime.now(timezone.utc) - timedelta(days=snapshot_days)).isoformat()
         alert_cutoff = (datetime.now(timezone.utc) - timedelta(days=alert_days)).isoformat()
         self.connection.execute("DELETE FROM snapshots WHERE captured_at < ?", (snapshot_cutoff,))
+        self.connection.execute(
+            "DELETE FROM alert_outcomes WHERE alert_id IN (SELECT id FROM alerts WHERE sent_at < ?)",
+            (alert_cutoff,),
+        )
+        self.connection.execute(
+            "DELETE FROM alert_wallets WHERE alert_id IN (SELECT id FROM alerts WHERE sent_at < ?)",
+            (alert_cutoff,),
+        )
         self.connection.execute("DELETE FROM alerts WHERE sent_at < ?", (alert_cutoff,))
         self.connection.commit()
 

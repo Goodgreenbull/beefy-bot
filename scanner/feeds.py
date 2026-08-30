@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import asyncio
 from collections import defaultdict
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, TYPE_CHECKING
 
 import aiohttp
 
 from .config import ScannerConfig
-from .models import Candidate, MarketSnapshot, normalise_address, utc_now
+from .models import Candidate, MarketSnapshot, SecurityProfile, normalise_address, utc_now
 
 if TYPE_CHECKING:
     from .state import SQLiteState
@@ -17,6 +18,17 @@ if TYPE_CHECKING:
 PAIR_CREATED_TOPIC = "0x0d3648bd0f6ba80134a33ba9275ac585d9d315f0ad8355cddefde31afa28d0e9"
 POOL_CREATED_TOPIC = "0x783cca1c0412dd0d695e784568c96da2e9c22ff989357a2e8b1d9b2b4e6b7118"
 TRANSFER_TOPIC = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"
+O1_LAUNCHED_TOPIC = "0x207384e895174175cc774fe7f7457b37c382f27ebf53d37d5257b862f80eaf9c"
+
+O1_FACTORIES = {
+    "base": {
+        "0x1176122eb77ad6a2339322cda7c4d7ea9bfa63dc": "o1-b20",
+    },
+    "robinhood": {
+        "0x411f21283d3e492bc395027329e08f9f4f560ba5": "o1-robinhood",
+        "0xe64ac4113848bbc1a6dde1a6d1da96720a36f297": "o1-robinhood-stocks",
+    },
+}
 
 
 def _number(value: Any, default: float = 0.0) -> float:
@@ -31,6 +43,19 @@ def _integer(value: Any, default: int = 0) -> int:
         return int(value) if value not in (None, "") else default
     except (TypeError, ValueError):
         return default
+
+
+def _truthy(value: Any) -> bool:
+    return value is True or str(value).strip().lower() in {"1", "true", "yes"}
+
+
+def _percent(value: Any, default: float | None = None) -> float | None:
+    if value in (None, ""):
+        return default
+    number = _number(value, float("nan"))
+    if number != number:
+        return default
+    return number * 100.0 if abs(number) <= 1.0 else number
 
 
 def _timestamp(value: Any) -> datetime | None:
@@ -141,6 +166,315 @@ class FlaunchFeed:
         if max_cursor > cursor:
             state.set_cursor("flaunch_order_id", str(max_cursor))
         return candidates
+
+
+class ClankerLaunchFeed:
+    """Use Clanker's public, no-auth token index instead of waiting for DEX indexing."""
+
+    name = "clanker"
+
+    def __init__(self, url: str = "https://www.clanker.world/api/tokens") -> None:
+        self.url = url
+
+    async def discover(self, session: aiohttp.ClientSession, state: "SQLiteState") -> list[Candidate]:
+        payload = await _get_json(
+            session,
+            self.url,
+            params={
+                "chainId": "8453",
+                "sort": "desc",
+                "limit": "20",
+                "includeUser": "true",
+                "includeMarket": "true",
+            },
+        )
+        rows = payload.get("data", []) if isinstance(payload, dict) else []
+        candidates: list[Candidate] = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            address = row.get("contract_address") or row.get("contractAddress") or row.get("address")
+            if not address:
+                continue
+            market = row.get("market") or row.get("market_data") or {}
+            user = row.get("user") or row.get("deployer") or {}
+            candidates.append(
+                Candidate(
+                    chain="base",
+                    token_address=address,
+                    pair_address=row.get("pair_address") or row.get("pairAddress"),
+                    source=self.name,
+                    launch_at=_timestamp(
+                        row.get("created_at")
+                        or row.get("createdAt")
+                        or row.get("deployed_at")
+                        or row.get("timestamp")
+                    ),
+                    name=row.get("name"),
+                    symbol=row.get("symbol"),
+                    deployer=(
+                        row.get("msg_sender")
+                        or row.get("deployer_address")
+                        or (user.get("address") if isinstance(user, dict) else None)
+                    ),
+                    metadata={"clanker_market": market},
+                )
+            )
+        return candidates
+
+
+class BaselineLaunchFeed:
+    """Read Baseline's public CoinGecko adapter for active Base bTokens."""
+
+    name = "baseline"
+
+    def __init__(self, base_url: str = "https://api.baseline.markets/v1/coingecko/base") -> None:
+        self.base_url = base_url.rstrip("/")
+
+    async def _metadata(
+        self, session: aiohttp.ClientSession, token_address: str
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        asset_url = f"{self.base_url}/asset"
+        pair_url = f"{self.base_url}/pair"
+        asset_result, pair_result = await asyncio.gather(
+            _get_json(session, asset_url, params={"id": token_address}),
+            _get_json(session, pair_url, params={"id": token_address}),
+            return_exceptions=True,
+        )
+        asset = asset_result.get("asset", {}) if isinstance(asset_result, dict) else {}
+        pair = pair_result.get("pair", {}) if isinstance(pair_result, dict) else {}
+        return asset, pair
+
+    async def discover(self, session: aiohttp.ClientSession, state: "SQLiteState") -> list[Candidate]:
+        payload = await _get_json(session, f"{self.base_url}/tickers")
+        rows = payload if isinstance(payload, list) else []
+        metadata = await asyncio.gather(
+            *(self._metadata(session, str(row.get("base_currency", ""))) for row in rows if row.get("base_currency"))
+        )
+        candidates: list[Candidate] = []
+        metadata_index = 0
+        for row in rows:
+            address = row.get("base_currency") if isinstance(row, dict) else None
+            if not address:
+                continue
+            asset, pair = metadata[metadata_index]
+            metadata_index += 1
+            candidates.append(
+                Candidate(
+                    chain="base",
+                    token_address=address,
+                    source=self.name,
+                    launch_at=_timestamp(pair.get("createdAtBlockTimestamp")),
+                    name=asset.get("name"),
+                    symbol=asset.get("symbol"),
+                    deployer=pair.get("creator"),
+                    chart_url=f"https://app.baseline.markets/token/{address}",
+                    metadata={
+                        "baseline_market": row,
+                        "baseline_pool_id": row.get("pool_id"),
+                        "baseline_pair": pair,
+                    },
+                )
+            )
+        return candidates
+
+
+class DexScreenerProfilesFeed:
+    """Broaden discovery to profiled tokens from otherwise non-standard launchers."""
+
+    name = "dexscreener-profiles"
+    url = "https://api.dexscreener.com/token-profiles/latest/v1"
+
+    async def discover(self, session: aiohttp.ClientSession, state: "SQLiteState") -> list[Candidate]:
+        payload = await _get_json(session, self.url)
+        rows = payload if isinstance(payload, list) else []
+        chain_aliases = {
+            "base": "base",
+            "robinhood": "robinhood",
+            "robinhood-chain": "robinhood",
+            "robinhood_chain": "robinhood",
+            "robinhoodchain": "robinhood",
+        }
+        candidates: list[Candidate] = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            chain = chain_aliases.get(str(row.get("chainId", "")).lower())
+            address = row.get("tokenAddress")
+            if not chain or not address:
+                continue
+            links = row.get("links") or []
+            candidates.append(
+                Candidate(
+                    chain=chain,
+                    token_address=address,
+                    source=self.name,
+                    chart_url=row.get("url"),
+                    metadata={
+                        "profile_description": row.get("description"),
+                        "profile_social_links": len(links),
+                    },
+                )
+            )
+        return candidates
+
+
+@dataclass(slots=True)
+class FactorySpec:
+    source: str
+    address: str
+    topic: str = O1_LAUNCHED_TOPIC
+    token_topic_index: int = 1
+    creator_topic_index: int | None = 3
+    pool_topic_index: int | None = 2
+
+    def __post_init__(self) -> None:
+        self.address = normalise_address(self.address)
+        self.topic = self.topic.lower()
+
+
+class FactoryLaunchFeed:
+    """Read platform-specific launch events directly from verified factory contracts."""
+
+    def __init__(
+        self,
+        chain: str,
+        rpc_url: str,
+        specs: list[FactorySpec],
+        config: ScannerConfig,
+    ) -> None:
+        self.chain = chain
+        self.rpc_url = rpc_url
+        self.specs = specs
+        self.config = config
+        self.name = f"platform-launches:{chain}"
+
+    async def _rpc(self, session: aiohttp.ClientSession, method: str, params: list[Any]) -> Any:
+        async with session.post(
+            self.rpc_url,
+            json={"jsonrpc": "2.0", "id": 1, "method": method, "params": params},
+        ) as response:
+            if response.status >= 400:
+                raise RuntimeError(f"platform RPC HTTP {response.status} on {self.chain}")
+            body = await response.json(content_type=None)
+        if body.get("error"):
+            raise RuntimeError(body["error"].get("message", "platform RPC error"))
+        return body.get("result")
+
+    async def _block_times(
+        self, session: aiohttp.ClientSession, block_numbers: set[int]
+    ) -> dict[int, datetime]:
+        if not block_numbers:
+            return {}
+        requests = [
+            {"jsonrpc": "2.0", "id": number, "method": "eth_getBlockByNumber", "params": [hex(number), False]}
+            for number in block_numbers
+        ]
+        async with session.post(self.rpc_url, json=requests) as response:
+            rows = await response.json(content_type=None)
+        return {
+            int(row["id"]): datetime.fromtimestamp(int(row["result"]["timestamp"], 16), timezone.utc)
+            for row in rows if isinstance(rows, list)
+            if row.get("result", {}).get("timestamp")
+        }
+
+    async def discover(self, session: aiohttp.ClientSession, state: "SQLiteState") -> list[Candidate]:
+        if not self.specs:
+            return []
+        latest = int(await self._rpc(session, "eth_blockNumber", []), 16)
+        cursor_key = f"platform_launches_block:{self.chain}"
+        stored = state.get_cursor(cursor_key)
+        start = int(stored) + 1 if stored is not None else latest - self.config.rpc_lookback_blocks + 1
+        start = max(0, start, latest - self.config.rpc_max_block_span + 1)
+        if start > latest:
+            return []
+
+        logs = await self._rpc(
+            session,
+            "eth_getLogs",
+            [{
+                "fromBlock": hex(start),
+                "toBlock": hex(latest),
+                "address": [spec.address for spec in self.specs],
+                "topics": [[spec.topic for spec in self.specs]],
+            }],
+        )
+        spec_by_address = {spec.address: spec for spec in self.specs}
+        block_numbers = {int(log["blockNumber"], 16) for log in logs or [] if log.get("blockNumber")}
+        block_times = await self._block_times(session, block_numbers)
+        candidates: list[Candidate] = []
+        for log in logs or []:
+            spec = spec_by_address.get(normalise_address(log.get("address")))
+            topics = log.get("topics") or []
+            if not spec or not topics or topics[0].lower() != spec.topic:
+                continue
+            if len(topics) <= spec.token_topic_index:
+                continue
+            token = _address_from_topic(topics[spec.token_topic_index])
+            if not token:
+                continue
+            creator = None
+            if spec.creator_topic_index is not None and len(topics) > spec.creator_topic_index:
+                creator = _address_from_topic(topics[spec.creator_topic_index])
+            pool_id = None
+            if spec.pool_topic_index is not None and len(topics) > spec.pool_topic_index:
+                pool_id = topics[spec.pool_topic_index]
+            words = [log.get("data", "0x")[i : i + 64] for i in range(2, len(log.get("data", "0x")), 64)]
+            quote = _address_from_word(words[0]) if words else None
+            block_number = int(log.get("blockNumber", "0x0"), 16)
+            candidates.append(
+                Candidate(
+                    chain=self.chain,
+                    token_address=token,
+                    source=spec.source,
+                    launch_at=block_times.get(block_number),
+                    deployer=creator,
+                    metadata={
+                        "factory": spec.address,
+                        "pool_id": pool_id,
+                        "quote_token": quote,
+                        "transaction_hash": log.get("transactionHash"),
+                        "block_number": block_number,
+                        "verified_platform_event": True,
+                    },
+                )
+            )
+        state.set_cursor(cursor_key, str(latest))
+        return candidates
+
+
+def platform_factory_specs(config: ScannerConfig, chain: str) -> list[FactorySpec]:
+    specs = [
+        FactorySpec(source=source, address=address)
+        for address, source in O1_FACTORIES.get(chain, {}).items()
+    ]
+    rows = config.factory_feeds.get(chain, []) if isinstance(config.factory_feeds, dict) else []
+    for row in rows if isinstance(rows, list) else []:
+        if not isinstance(row, dict) or not row.get("address") or not row.get("source"):
+            continue
+        try:
+            specs.append(
+                FactorySpec(
+                    source=str(row["source"]),
+                    address=str(row["address"]),
+                    topic=str(row.get("topic") or O1_LAUNCHED_TOPIC),
+                    token_topic_index=_integer(row.get("tokenTopicIndex"), 1),
+                    creator_topic_index=(
+                        _integer(row.get("creatorTopicIndex"), 3)
+                        if row.get("creatorTopicIndex", 3) is not None else None
+                    ),
+                    pool_topic_index=(
+                        _integer(row.get("poolTopicIndex"), 2)
+                        if row.get("poolTopicIndex", 2) is not None else None
+                    ),
+                )
+            )
+        except (TypeError, ValueError):
+            continue
+    unique: dict[tuple[str, str], FactorySpec] = {}
+    for spec in specs:
+        unique[(spec.address, spec.topic)] = spec
+    return list(unique.values())
 
 
 class GeckoTerminalNewPoolsFeed:
@@ -298,7 +632,7 @@ class DexScreenerEnricher:
             payload = await _get_json(session, url)
         pairs = payload.get("pairs", []) if isinstance(payload, dict) else []
         if not pairs:
-            return snapshot_from_gecko(candidate)
+            return snapshot_from_fallback(candidate)
 
         expected_chain_ids = {candidate.chain}
         if candidate.chain == "robinhood":
@@ -309,7 +643,7 @@ class DexScreenerEnricher:
             if exact:
                 chain_pairs = exact
         if not chain_pairs:
-            return snapshot_from_gecko(candidate)
+            return snapshot_from_fallback(candidate)
         viable = chain_pairs
         pair = max(viable, key=lambda p: _number((p.get("liquidity") or {}).get("usd")))
         base_token = pair.get("baseToken") or {}
@@ -351,38 +685,165 @@ class DexScreenerEnricher:
                 "url": pair.get("url"),
                 "name": (pair.get("baseToken") or {}).get("name"),
                 "symbol": (pair.get("baseToken") or {}).get("symbol"),
+                "pair_created_at": pair.get("pairCreatedAt"),
             },
         )
 
 
-def snapshot_from_gecko(candidate: Candidate) -> MarketSnapshot | None:
+def snapshot_from_fallback(candidate: Candidate) -> MarketSnapshot | None:
     market = candidate.metadata.get("gecko_market")
-    if not isinstance(market, dict):
-        return None
-    volume = market.get("volume_usd") or {}
-    txns = market.get("transactions") or {}
-    change = market.get("price_change_percentage") or {}
-    return MarketSnapshot(
-        chain=candidate.chain,
-        token_address=candidate.token_address,
-        pair_address=candidate.pair_address,
-        price_usd=_number(market.get("base_token_price_usd"), 0.0) or None,
-        liquidity_usd=_number(market.get("reserve_in_usd")),
-        market_cap_usd=_number(market.get("market_cap_usd"), 0.0) or None,
-        fdv_usd=_number(market.get("fdv_usd"), 0.0) or None,
-        volume_5m_usd=_number(volume.get("m5")),
-        volume_1h_usd=_number(volume.get("h1")),
-        volume_24h_usd=_number(volume.get("h24")),
-        buys_5m=_integer((txns.get("m5") or {}).get("buys")),
-        sells_5m=_integer((txns.get("m5") or {}).get("sells")),
-        buys_1h=_integer((txns.get("h1") or {}).get("buys")),
-        sells_1h=_integer((txns.get("h1") or {}).get("sells")),
-        price_change_5m=_number(change.get("m5")),
-        price_change_1h=_number(change.get("h1")),
-        price_change_24h=_number(change.get("h24")),
-        source="geckoterminal",
-        raw={"dex": candidate.metadata.get("dex")},
-    )
+    if isinstance(market, dict):
+        volume = market.get("volume_usd") or {}
+        txns = market.get("transactions") or {}
+        change = market.get("price_change_percentage") or {}
+        return MarketSnapshot(
+            chain=candidate.chain,
+            token_address=candidate.token_address,
+            pair_address=candidate.pair_address,
+            price_usd=_number(market.get("base_token_price_usd"), 0.0) or None,
+            liquidity_usd=_number(market.get("reserve_in_usd")),
+            market_cap_usd=_number(market.get("market_cap_usd"), 0.0) or None,
+            fdv_usd=_number(market.get("fdv_usd"), 0.0) or None,
+            volume_5m_usd=_number(volume.get("m5")),
+            volume_1h_usd=_number(volume.get("h1")),
+            volume_24h_usd=_number(volume.get("h24")),
+            buys_5m=_integer((txns.get("m5") or {}).get("buys")),
+            sells_5m=_integer((txns.get("m5") or {}).get("sells")),
+            buys_1h=_integer((txns.get("h1") or {}).get("buys")),
+            sells_1h=_integer((txns.get("h1") or {}).get("sells")),
+            price_change_5m=_number(change.get("m5")),
+            price_change_1h=_number(change.get("h1")),
+            price_change_24h=_number(change.get("h24")),
+            source="geckoterminal",
+            raw={"dex": candidate.metadata.get("dex")},
+        )
+    baseline = candidate.metadata.get("baseline_market")
+    if isinstance(baseline, dict):
+        return MarketSnapshot(
+            chain=candidate.chain,
+            token_address=candidate.token_address,
+            price_usd=_number(baseline.get("last_price"), 0.0) or None,
+            liquidity_usd=_number(baseline.get("liquidity_in_usd")),
+            # Baseline's target_volume is denominated in the target asset, not USD.
+            # Leave USD volume empty until DexScreener can supply a comparable value.
+            volume_24h_usd=0.0,
+            source="baseline",
+            raw={
+                "dex": "baseline",
+                "url": candidate.chart_url,
+                "name": candidate.name,
+                "symbol": candidate.symbol,
+            },
+        )
+    return None
+
+
+class TokenRiskEnricher:
+    """Combine free GoPlus contract data with Base sell simulation from Honeypot.is."""
+
+    CHAIN_IDS = {"base": "8453", "robinhood": "4663"}
+
+    def __init__(self, config: ScannerConfig) -> None:
+        self._semaphore = asyncio.Semaphore(max(1, min(config.dex_concurrency, 4)))
+
+    async def _goplus(self, session: aiohttp.ClientSession, candidate: Candidate) -> dict[str, Any]:
+        chain_id = self.CHAIN_IDS.get(candidate.chain)
+        if not chain_id:
+            return {}
+        payload = await _get_json(
+            session,
+            f"https://api.gopluslabs.io/api/v1/token_security/{chain_id}",
+            params={"contract_addresses": candidate.token_address},
+        )
+        result = payload.get("result", {}) if isinstance(payload, dict) else {}
+        return result.get(candidate.token_address, result.get(candidate.token_address.lower(), {})) or {}
+
+    async def _honeypot(self, session: aiohttp.ClientSession, candidate: Candidate) -> dict[str, Any]:
+        if candidate.chain != "base":
+            return {}
+        return await _get_json(
+            session,
+            "https://api.honeypot.is/v2/IsHoneypot",
+            params={"address": candidate.token_address, "chainID": "8453"},
+        )
+
+    async def check(self, session: aiohttp.ClientSession, candidate: Candidate) -> SecurityProfile:
+        async with self._semaphore:
+            results = await asyncio.gather(
+                self._goplus(session, candidate),
+                self._honeypot(session, candidate),
+                return_exceptions=True,
+            )
+        goplus = results[0] if isinstance(results[0], dict) else {}
+        honeypot = results[1] if isinstance(results[1], dict) else {}
+        errors = [str(item) for item in results if isinstance(item, Exception)]
+        providers: list[str] = []
+        if goplus:
+            providers.append("goplus")
+        if honeypot:
+            providers.append("honeypot.is")
+
+        summary = honeypot.get("summary") or {}
+        simulation = honeypot.get("simulationResult") or {}
+        hp_result = honeypot.get("honeypotResult") or {}
+        contract_code = honeypot.get("contractCode") or {}
+        flags = {
+            str(item.get("flag", "")).lower()
+            for item in summary.get("flags", [])
+            if isinstance(item, dict) and item.get("flag")
+        }
+        holders = goplus.get("holders") or []
+        unlocked_eoa = sum(
+            _percent(holder.get("percent"), 0.0) or 0.0
+            for holder in holders
+            if isinstance(holder, dict)
+            and not _truthy(holder.get("is_contract"))
+            and not _truthy(holder.get("is_locked"))
+            and str(holder.get("address", "")).lower()
+            not in {
+                "0x0000000000000000000000000000000000000000",
+                "0x000000000000000000000000000000000000dead",
+            }
+        )
+        open_source: bool | None = None
+        if goplus.get("is_open_source") not in (None, ""):
+            open_source = _truthy(goplus.get("is_open_source"))
+        elif contract_code.get("rootOpenSource") is not None:
+            open_source = bool(contract_code.get("rootOpenSource"))
+
+        return SecurityProfile(
+            chain=candidate.chain,
+            token_address=candidate.token_address,
+            checked=bool(providers),
+            providers=tuple(providers),
+            is_honeypot=_truthy(goplus.get("is_honeypot")) or bool(hp_result.get("isHoneypot")),
+            cannot_buy=_truthy(goplus.get("cannot_buy")),
+            cannot_sell=_truthy(goplus.get("cannot_sell")),
+            hidden_owner=_truthy(goplus.get("hidden_owner")),
+            owner_change_balance=_truthy(goplus.get("owner_change_balance")),
+            transfer_pausable=_truthy(goplus.get("transfer_pausable")),
+            blacklist_function=_truthy(goplus.get("is_blacklisted")),
+            mintable=_truthy(goplus.get("is_mintable")),
+            proxy=_truthy(goplus.get("is_proxy")) or bool(contract_code.get("isProxy")),
+            open_source=open_source,
+            buy_tax=_number(simulation.get("buyTax"), _percent(goplus.get("buy_tax"), 0.0) or 0.0),
+            sell_tax=_number(simulation.get("sellTax"), _percent(goplus.get("sell_tax"), 0.0) or 0.0),
+            owner_percent=_percent(goplus.get("owner_percent")),
+            top_unlocked_eoa_percent=round(unlocked_eoa, 2) if holders else None,
+            holder_count=_integer(goplus.get("holder_count"), 0) or _integer((honeypot.get("token") or {}).get("totalHolders"), 0) or None,
+            fake_token=_truthy(goplus.get("fake_token")),
+            creator_percent=_percent(goplus.get("creator_percent")),
+            creator_honeypot_count=_integer(goplus.get("honeypot_with_same_creator"), 0),
+            can_take_back_ownership=_truthy(goplus.get("can_take_back_ownership")),
+            selfdestruct=_truthy(goplus.get("selfdestruct")),
+            slippage_modifiable=_truthy(goplus.get("slippage_modifiable")),
+            personal_slippage_modifiable=_truthy(goplus.get("personal_slippage_modifiable")),
+            trading_cooldown=_truthy(goplus.get("trading_cooldown")),
+            risk_level=_integer(summary.get("riskLevel"), -1) if summary.get("riskLevel") is not None else None,
+            risk_label=str(summary.get("risk")) if summary.get("risk") else None,
+            flags=tuple(sorted(flags)),
+            error="; ".join(errors)[:300] or None,
+        )
 
 
 class SignalOverlay:
@@ -406,12 +867,16 @@ class SignalOverlay:
 
 
 class SmartWalletMonitor:
-    """Count ERC-20 transfers into/out of explicitly curated wallets."""
+    """Monitor manually vetted and outcome-curated wallets without paid APIs."""
 
     def __init__(self, config: ScannerConfig) -> None:
         self.config = config
         self.rpc_urls = {"base": config.base_rpc_url, "robinhood": config.robinhood_rpc_url}
-        self.wallet_topics = ["0x" + wallet.removeprefix("0x").rjust(64, "0") for wallet in config.smart_wallets]
+        self.configured_wallets = {
+            normalise_address(wallet)
+            for wallet in config.smart_wallets
+            if len(normalise_address(wallet)) == 42
+        }
 
     async def _rpc(self, session: aiohttp.ClientSession, url: str, method: str, params: list[Any]) -> Any:
         async with session.post(url, json={"jsonrpc": "2.0", "id": 1, "method": method, "params": params}) as response:
@@ -425,7 +890,16 @@ class SmartWalletMonitor:
     async def collect(
         self, session: aiohttp.ClientSession, state: "SQLiteState", candidates: list[Candidate]
     ) -> dict[str, dict[str, float]]:
-        if not self.wallet_topics:
+        curated_by_chain = {
+            chain: state.curated_smart_wallets(
+                self.config.smart_wallet_min_observations,
+                self.config.smart_wallet_min_win_rate,
+                self.config.smart_wallet_min_average_return,
+                chain=chain,
+            )
+            for chain in self.rpc_urls
+        } if self.config.auto_curate_smart_wallets else {}
+        if not self.configured_wallets and not any(curated_by_chain.values()):
             return {}
         grouped: dict[str, list[str]] = defaultdict(list)
         for candidate in candidates:
@@ -435,6 +909,12 @@ class SmartWalletMonitor:
             lambda: {"smart_wallet_buys": 0.0, "smart_wallet_sells": 0.0, "smart_wallet_net_usd": 0.0}
         )
         for chain, addresses in grouped.items():
+            wallets = self.configured_wallets | curated_by_chain.get(chain, set())
+            wallet_topics = [
+                "0x" + wallet.removeprefix("0x").rjust(64, "0") for wallet in wallets
+            ]
+            if not wallet_topics:
+                continue
             url = self.rpc_urls[chain]
             latest = int(await self._rpc(session, url, "eth_blockNumber", []), 16)
             cursor_key = f"smart_wallet_block:{chain}"
@@ -447,8 +927,8 @@ class SmartWalletMonitor:
                 token_batch = list(dict.fromkeys(addresses))[index : index + 20]
                 common = {"fromBlock": hex(start), "toBlock": hex(latest), "address": token_batch}
                 incoming, outgoing = await asyncio.gather(
-                    self._rpc(session, url, "eth_getLogs", [{**common, "topics": [TRANSFER_TOPIC, None, self.wallet_topics]}]),
-                    self._rpc(session, url, "eth_getLogs", [{**common, "topics": [TRANSFER_TOPIC, self.wallet_topics]}]),
+                    self._rpc(session, url, "eth_getLogs", [{**common, "topics": [TRANSFER_TOPIC, None, wallet_topics]}]),
+                    self._rpc(session, url, "eth_getLogs", [{**common, "topics": [TRANSFER_TOPIC, wallet_topics]}]),
                 )
                 for log in incoming or []:
                     key = f"{chain}:{normalise_address(log.get('address'))}"
@@ -458,3 +938,57 @@ class SmartWalletMonitor:
                     signals[key]["smart_wallet_sells"] += 1
             state.set_cursor(cursor_key, str(latest))
         return dict(signals)
+
+    async def observe_early_buyers(
+        self,
+        session: aiohttp.ClientSession,
+        candidate: Candidate,
+        snapshot: MarketSnapshot,
+    ) -> set[str]:
+        """Resolve transaction senders buying from a pool near alert time.
+
+        Transfer recipients are often routers. Transaction senders are a better
+        approximation of the actual wallet and need no third-party wallet feed.
+        """
+        pair = normalise_address(snapshot.pair_address or candidate.pair_address)
+        url = self.rpc_urls.get(candidate.chain)
+        if not url or len(pair) != 42:
+            return set()
+        latest = int(await self._rpc(session, url, "eth_blockNumber", []), 16)
+        start = max(0, latest - self.config.early_buyer_lookback_blocks + 1)
+        pair_topic = "0x" + pair.removeprefix("0x").rjust(64, "0")
+        logs = await self._rpc(
+            session,
+            url,
+            "eth_getLogs",
+            [{
+                "fromBlock": hex(start),
+                "toBlock": hex(latest),
+                "address": candidate.token_address,
+                "topics": [TRANSFER_TOPIC, pair_topic],
+            }],
+        )
+        hashes = list(
+            dict.fromkeys(
+                log.get("transactionHash")
+                for log in logs or []
+                if isinstance(log, dict) and log.get("transactionHash")
+            )
+        )[-self.config.max_early_buyers_per_alert :]
+        if not hashes:
+            return set()
+        requests = [
+            {"jsonrpc": "2.0", "id": index, "method": "eth_getTransactionByHash", "params": [tx_hash]}
+            for index, tx_hash in enumerate(hashes)
+        ]
+        async with session.post(url, json=requests) as response:
+            if response.status >= 400:
+                raise RuntimeError(f"early-buyer RPC HTTP {response.status}")
+            payload = await response.json(content_type=None)
+        rows = payload if isinstance(payload, list) else []
+        return {
+            normalise_address((row.get("result") or {}).get("from"))
+            for row in rows
+            if isinstance(row, dict)
+            and len(normalise_address((row.get("result") or {}).get("from"))) == 42
+        }

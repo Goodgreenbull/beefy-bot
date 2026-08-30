@@ -87,6 +87,55 @@ class MarketSnapshot:
 
 
 @dataclass(slots=True)
+class SecurityProfile:
+    chain: str
+    token_address: str
+    checked_at: datetime = field(default_factory=utc_now)
+    checked: bool = False
+    providers: tuple[str, ...] = ()
+    is_honeypot: bool = False
+    cannot_buy: bool = False
+    cannot_sell: bool = False
+    hidden_owner: bool = False
+    owner_change_balance: bool = False
+    transfer_pausable: bool = False
+    blacklist_function: bool = False
+    mintable: bool = False
+    proxy: bool = False
+    open_source: bool | None = None
+    buy_tax: float | None = None
+    sell_tax: float | None = None
+    owner_percent: float | None = None
+    top_unlocked_eoa_percent: float | None = None
+    holder_count: int | None = None
+    fake_token: bool = False
+    creator_percent: float | None = None
+    creator_honeypot_count: int = 0
+    can_take_back_ownership: bool = False
+    selfdestruct: bool = False
+    slippage_modifiable: bool = False
+    personal_slippage_modifiable: bool = False
+    trading_cooldown: bool = False
+    risk_level: int | None = None
+    risk_label: str | None = None
+    flags: tuple[str, ...] = ()
+    error: str | None = None
+
+    def __post_init__(self) -> None:
+        self.chain = self.chain.strip().lower()
+        self.token_address = normalise_address(self.token_address)
+
+    @property
+    def key(self) -> str:
+        return f"{self.chain}:{self.token_address}"
+
+    def to_record(self) -> dict[str, Any]:
+        value = asdict(self)
+        value["checked_at"] = self.checked_at.isoformat()
+        return value
+
+
+@dataclass(slots=True)
 class ScoreResult:
     score: float
     stage: str

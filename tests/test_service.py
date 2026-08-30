@@ -33,6 +33,17 @@ class FakeEnricher:
             social_links=3,
             smart_wallet_buys=2,
             source="fake-market",
+            raw={
+                "security": {
+                    "checked": True,
+                    "is_honeypot": False,
+                    "cannot_buy": False,
+                    "cannot_sell": False,
+                    "sell_tax": 0,
+                    "risk_level": 0,
+                    "open_source": True,
+                }
+            },
         )
 
 

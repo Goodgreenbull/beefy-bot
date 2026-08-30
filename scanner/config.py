@@ -11,6 +11,11 @@ BASE_QUOTES = {
     "0x50c5725949a6f0c72e6c4a641f24049a917db0cb",  # DAI
 }
 
+ROBINHOOD_QUOTES = {
+    "0x0bd7d308f8e1639fab988df18a8011f41eacad73",  # WETH
+    "0x5fc5360d0400a0fd4f2af552add042d716f1d168",  # USDG
+}
+
 
 def _bool(name: str, default: bool) -> bool:
     value = os.getenv(name)
@@ -51,13 +56,14 @@ class ScannerConfig:
     interval_seconds: int = 300
     state_db: str = "scanner_state.sqlite3"
     alert_chat_id: str | None = None
-    min_alert_score: float = 68.0
-    strong_alert_score: float = 80.0
+    min_alert_score: float = 74.0
+    strong_alert_score: float = 84.0
     alert_cooldown_minutes: int = 45
     alert_score_upgrade: float = 10.0
     active_candidate_limit: int = 50
     active_max_age_hours: int = 720
     max_alerts_per_cycle: int = 3
+    outcome_candidate_limit: int = 50
     warmup_cycles: int = 1
     min_liquidity_usd: float = 3_000.0
     max_market_cap_usd: float = 5_000_000.0
@@ -72,15 +78,32 @@ class ScannerConfig:
     rpc_max_block_span: int = 1_800
     http_timeout_seconds: int = 12
     dex_concurrency: int = 6
+    security_check_min_score: float = 60.0
+    security_cache_minutes: int = 360
+    max_security_checks_per_cycle: int = 12
+    auto_calibrate: bool = True
+    calibration_min_samples: int = 30
     smart_wallets: tuple[str, ...] = ()
+    auto_curate_smart_wallets: bool = True
+    smart_wallet_min_observations: int = 3
+    smart_wallet_min_win_rate: float = 0.60
+    smart_wallet_min_average_return: float = 10.0
+    early_buyer_lookback_blocks: int = 300
+    max_early_buyers_per_alert: int = 20
     overlay_url: str | None = None
-    quote_tokens: dict[str, set[str]] = field(default_factory=lambda: {"base": set(BASE_QUOTES)})
+    factory_feeds: dict = field(default_factory=dict)
+    quote_tokens: dict[str, set[str]] = field(
+        default_factory=lambda: {"base": set(BASE_QUOTES), "robinhood": set(ROBINHOOD_QUOTES)}
+    )
 
     @classmethod
     def from_env(cls) -> "ScannerConfig":
         interval = max(60, min(600, _int("SCANNER_INTERVAL_SECONDS", 300)))
         raw_quotes = _json_map("SCANNER_QUOTE_TOKENS_JSON")
-        quote_tokens: dict[str, set[str]] = {"base": set(BASE_QUOTES)}
+        quote_tokens: dict[str, set[str]] = {
+            "base": set(BASE_QUOTES),
+            "robinhood": set(ROBINHOOD_QUOTES),
+        }
         for chain, addresses in raw_quotes.items():
             if isinstance(addresses, list):
                 quote_tokens[str(chain).lower()] = {str(address).lower() for address in addresses}
@@ -94,13 +117,14 @@ class ScannerConfig:
                 or os.getenv("ADMIN_CHAT_ID")
                 or os.getenv("TELEGRAM_GROUP_ID")
             ),
-            min_alert_score=_float("SCANNER_MIN_ALERT_SCORE", 68.0),
-            strong_alert_score=_float("SCANNER_STRONG_ALERT_SCORE", 80.0),
+            min_alert_score=_float("SCANNER_MIN_ALERT_SCORE", 74.0),
+            strong_alert_score=_float("SCANNER_STRONG_ALERT_SCORE", 84.0),
             alert_cooldown_minutes=_int("SCANNER_ALERT_COOLDOWN_MINUTES", 45),
             alert_score_upgrade=_float("SCANNER_ALERT_SCORE_UPGRADE", 10.0),
             active_candidate_limit=_int("SCANNER_ACTIVE_LIMIT", 50),
             active_max_age_hours=_int("SCANNER_ACTIVE_MAX_AGE_HOURS", 720),
             max_alerts_per_cycle=max(1, _int("SCANNER_MAX_ALERTS_PER_CYCLE", 3)),
+            outcome_candidate_limit=max(1, _int("SCANNER_OUTCOME_ACTIVE_LIMIT", 50)),
             warmup_cycles=max(0, _int("SCANNER_WARMUP_CYCLES", 1)),
             min_liquidity_usd=_float("SCANNER_MIN_LIQUIDITY_USD", 3_000.0),
             max_market_cap_usd=_float("SCANNER_MAX_MARKET_CAP_USD", 5_000_000.0),
@@ -115,7 +139,29 @@ class ScannerConfig:
             rpc_max_block_span=_int("SCANNER_RPC_MAX_BLOCK_SPAN", 1_800),
             http_timeout_seconds=_int("SCANNER_HTTP_TIMEOUT_SECONDS", 12),
             dex_concurrency=_int("SCANNER_DEX_CONCURRENCY", 6),
+            security_check_min_score=_float("SCANNER_SECURITY_CHECK_MIN_SCORE", 60.0),
+            security_cache_minutes=max(15, _int("SCANNER_SECURITY_CACHE_MINUTES", 360)),
+            max_security_checks_per_cycle=max(1, _int("SCANNER_MAX_SECURITY_CHECKS", 12)),
+            auto_calibrate=_bool("SCANNER_AUTO_CALIBRATE", True),
+            calibration_min_samples=max(20, _int("SCANNER_CALIBRATION_MIN_SAMPLES", 30)),
             smart_wallets=_csv("SCANNER_SMART_WALLETS"),
+            auto_curate_smart_wallets=_bool("SCANNER_AUTO_CURATE_SMART_WALLETS", True),
+            smart_wallet_min_observations=max(
+                2, _int("SCANNER_SMART_WALLET_MIN_OBSERVATIONS", 3)
+            ),
+            smart_wallet_min_win_rate=max(
+                0.0, min(1.0, _float("SCANNER_SMART_WALLET_MIN_WIN_RATE", 0.60))
+            ),
+            smart_wallet_min_average_return=_float(
+                "SCANNER_SMART_WALLET_MIN_AVERAGE_RETURN", 10.0
+            ),
+            early_buyer_lookback_blocks=max(
+                20, _int("SCANNER_EARLY_BUYER_LOOKBACK_BLOCKS", 300)
+            ),
+            max_early_buyers_per_alert=max(
+                1, _int("SCANNER_MAX_EARLY_BUYERS_PER_ALERT", 20)
+            ),
             overlay_url=os.getenv("SCANNER_SIGNAL_OVERLAY_URL"),
+            factory_feeds=_json_map("SCANNER_FACTORY_FEEDS_JSON"),
             quote_tokens=quote_tokens,
         )

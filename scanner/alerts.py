@@ -35,6 +35,14 @@ def format_alert(candidate: Candidate, snapshot: MarketSnapshot, result: ScoreRe
         analysis = f"Promising early flow, but conviction is not high enough yet: {drivers}."
     address = html.escape(candidate.token_address)
     chart = candidate.chart_url or snapshot.raw.get("url")
+    security = snapshot.raw.get("security") if isinstance(snapshot.raw, dict) else {}
+    security = security if isinstance(security, dict) else {}
+    providers = "+".join(str(item) for item in security.get("providers", [])) or "free checks"
+    safety = (
+        f"Safety checked ({providers}) · sell tax {float(security.get('sell_tax') or 0):.1f}%"
+        if security.get("checked")
+        else "Safety check unavailable"
+    )
 
     lines = [
         f"🚨 <b>{chain} · {html.escape(result.stage)} · {result.score:.0f}/100</b>",
@@ -45,6 +53,7 @@ def format_alert(candidate: Candidate, snapshot: MarketSnapshot, result: ScoreRe
         f"Age {age} · MC {_money(market_cap)} · Liq {_money(snapshot.liquidity_usd)}",
         f"5m vol {_money(snapshot.volume_5m_usd)} ({churn:.2f}x liq) · {snapshot.buys_5m}B/{snapshot.sells_5m}S",
         f"5m {snapshot.price_change_5m:+.1f}% · 1h {snapshot.price_change_1h:+.1f}% · via {source}",
+        html.escape(safety),
         "",
         f"<b>Invalidation:</b> {html.escape(result.invalidation)}",
         f"<b>CA:</b> <code>{address}</code>",

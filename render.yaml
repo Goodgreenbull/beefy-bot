@@ -13,7 +13,15 @@ services:
         value: "300"
       - key: SCANNER_ACTIVE_LIMIT
         value: "50"
+      - key: SCANNER_MIN_ALERT_SCORE
+        value: "74"
+      - key: SCANNER_STRONG_ALERT_SCORE
+        value: "84"
       - key: SCANNER_MAX_ALERTS_PER_CYCLE
         value: "3"
       - key: SCANNER_WARMUP_CYCLES
         value: "1"
+      - key: SCANNER_AUTO_CALIBRATE
+        value: "true"
+      - key: SCANNER_AUTO_CURATE_SMART_WALLETS
+        value: "true"

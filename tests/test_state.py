@@ -2,6 +2,7 @@ import unittest
 from datetime import datetime, timedelta, timezone
 
 from scanner.models import Candidate, MarketSnapshot, ScoreResult
+from scanner.config import ScannerConfig
 from scanner.state import SQLiteState
 
 
@@ -58,6 +59,48 @@ class SQLiteStateTests(unittest.TestCase):
         self.assertEqual(self.state.get_cursor("feed"), "42")
         self.assertEqual(self.state.health()[0]["items_seen"], 3)
 
+    def test_alert_outcomes_track_all_horizons_mfe_mae_and_wallet_reputation(self):
+        score = ScoreResult(84, "IGNITION", "STRONG WATCH", True, 0, {}, [], [], "test")
+        entry = MarketSnapshot(
+            chain="base",
+            token_address=TOKEN,
+            price_usd=1.0,
+            liquidity_usd=10_000,
+            market_cap_usd=100_000,
+        )
+        alert_ids = [self.state.record_alert(self.candidate.key, score, entry) for _ in range(3)]
+        wallet = "0x7777777777777777777777777777777777777777"
+        sent_at = datetime.now(timezone.utc) - timedelta(hours=24)
+        for alert_id in alert_ids:
+            self.state.connection.execute(
+                "UPDATE alerts SET sent_at = ? WHERE id = ?", (sent_at.isoformat(), alert_id)
+            )
+            self.state.record_alert_wallets(alert_id, "base", {wallet})
+        self.state.connection.commit()
+
+        prices = ((15, 1.10), (60, 0.80), (360, 1.50), (1440, 1.20))
+        for minutes, price in prices:
+            self.state.update_alert_outcomes(
+                self.candidate.key,
+                MarketSnapshot(
+                    chain="base",
+                    token_address=TOKEN,
+                    captured_at=sent_at + timedelta(minutes=minutes),
+                    price_usd=price,
+                    liquidity_usd=10_000,
+                    market_cap_usd=100_000 * price,
+                ),
+            )
+
+        report = self.state.outcome_report()
+        self.assertEqual(report["outcome_counts"], {15: 3, 60: 3, 360: 3, 1440: 3})
+        alert = self.state.connection.execute(
+            "SELECT mfe_pct, mae_pct FROM alerts WHERE id = ?", (alert_ids[0],)
+        ).fetchone()
+        self.assertAlmostEqual(alert["mfe_pct"], 50.0)
+        self.assertAlmostEqual(alert["mae_pct"], -20.0)
+        self.assertIn(wallet, self.state.curated_smart_wallets())
+
     def test_active_candidates_balance_fresh_and_rotating_rechecks(self):
         self.state.connection.execute("DELETE FROM candidates")
         self.state.connection.commit()
@@ -89,3 +132,47 @@ class SQLiteStateTests(unittest.TestCase):
         self.assertTrue(set(keys[:4]).issubset(active_keys))
         self.assertIn(keys[4], active_keys)
         self.assertIn(keys[5], active_keys)
+
+    def test_threshold_calibration_waits_for_a_real_sample_then_raises_quality_bar(self):
+        config = ScannerConfig(calibration_min_samples=30)
+        before = self.state.calibrated_thresholds(config)
+        self.assertFalse(before["calibrated"])
+
+        sent_at = datetime.now(timezone.utc) - timedelta(hours=24)
+        for index in range(40):
+            score_value = 74 + (index % 6) if index < 21 else 80 + (index % 10)
+            result = ScoreResult(
+                score_value, "IGNITION", "EARLY WATCH", True, 0, {}, [], [], "test"
+            )
+            alert_id = self.state.record_alert(
+                self.candidate.key,
+                result,
+                MarketSnapshot(chain="base", token_address=TOKEN, price_usd=1.0),
+            )
+            realised = 30.0 if score_value >= 80 else -25.0
+            self.state.connection.execute(
+                "UPDATE alerts SET sent_at = ?, mfe_pct = 45, mae_pct = -12 WHERE id = ?",
+                (sent_at.isoformat(), alert_id),
+            )
+            self.state.connection.execute(
+                """
+                INSERT INTO alert_outcomes(
+                    alert_id, horizon_minutes, due_at, captured_at,
+                    price_usd, market_cap_usd, liquidity_usd, return_pct
+                ) VALUES (?, 1440, ?, ?, ?, 100000, 10000, ?)
+                """,
+                (
+                    alert_id,
+                    (sent_at + timedelta(hours=24)).isoformat(),
+                    datetime.now(timezone.utc).isoformat(),
+                    1 + realised / 100,
+                    realised,
+                ),
+            )
+        self.state.connection.commit()
+
+        calibrated = self.state.calibrated_thresholds(config)
+        self.assertTrue(calibrated["calibrated"])
+        self.assertEqual(calibrated["samples"], 40)
+        self.assertGreater(calibrated["watch"], config.min_alert_score)
+        self.assertGreaterEqual(calibrated["buy"], 84)

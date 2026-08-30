@@ -287,7 +287,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🐂💚 *Good Green Bull*\n\nBuilt on Base. Built for builders.\nThe bull that doesn't stop.\n\nChoose an option below 👇", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("📜 *GGB Bot Commands*\n\n🐂 *Community*\n/gm — Say GM to the herd\n/bull — Random Beefy quote\n/leaderboard — Top GM senders today\n/streaks — Top GM streak holders\n/herd — Community stats\n/about — What is GGB?\n\n📈 *Alpha Discovery*\n/trending — Top trending tokens on Base\n/lookup `<token>` — Deep dive any token\n\n🗳️ *Engagement*\n/poll `<question>` — Create a Yes/No poll\n\n👤 *Admin only*\n/scannerstatus — Scanner and feed health\n/scannow — Run a scan immediately\n/alerttest — Test the configured signal destination\n/daily — Trigger daily post\n/revival — Relaunch announcement\n/broadcast `<msg>` — Message the group\n/settings — Admin panel\n\n/help — Show this list", parse_mode="Markdown")
+    await update.message.reply_text("📜 *GGB Bot Commands*\n\n🐂 *Community*\n/gm — Say GM to the herd\n/bull — Random Beefy quote\n/leaderboard — Top GM senders today\n/streaks — Top GM streak holders\n/herd — Community stats\n/about — What is GGB?\n\n📈 *Alpha Discovery*\n/trending — Top trending tokens on Base\n/lookup `<token>` — Deep dive any token\n\n🗳️ *Engagement*\n/poll `<question>` — Create a Yes/No poll\n\n👤 *Admin only*\n/scannerstatus — Scanner and feed health\n/signalstats — Measured alert performance\n/scannow — Run a scan immediately\n/alerttest — Test the configured signal destination\n/daily — Trigger daily post\n/revival — Relaunch announcement\n/broadcast `<msg>` — Message the group\n/settings — Admin panel\n\n/help — Show this list", parse_mode="Markdown")
 
 async def about_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🐂💚 *What is Good Green Bull?*\n\nGGB is a builder community on Base chain.\n\nWe track trending tokens, share alpha, and support each other in building projects that actually last.\n\nBeefy Bot is the group's engine — it posts daily content, scans Base for trending tokens, alerts the group to volume breakouts, and keeps the herd engaged.\n\nNo hype. No empty promises.\nJust builders who ship.\n\n🌐 goodgreenbull.com\n🕊️ https://x.com/BeefytheBull\n📣 https://t.me/goodgreenbull\n\nHerd strong. We move. 🐂💚", parse_mode="Markdown")
@@ -452,8 +452,62 @@ async def scannerstatus_command(update: Update, context: ContextTypes.DEFAULT_TY
         f"Candidates (24h): {status.get('candidates_24h', 0)}\n"
         f"Snapshots (24h): {status.get('snapshots_24h', 0)}\n"
         f"Alerts (24h): {status.get('alerts_24h', 0)}\n"
+        f"Outcome observations (24h): {status.get('outcomes_24h', 0)}\n"
+        f"WATCH/BUY thresholds: {status.get('watch_threshold', scanner_config.min_alert_score):.0f}/"
+        f"{status.get('buy_threshold', scanner_config.strong_alert_score):.0f}\n"
         f"{health_line}"
     )
+
+
+async def signalstats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update.effective_user):
+        await update.message.reply_text("⛔ Admin only.")
+        return
+    if not scanner_config.enabled or scanner_service is None:
+        await update.message.reply_text("⏸ Scanner is disabled in the environment.")
+        return
+    status = scanner_service.status()
+    report = status.get("outcome_report", {})
+    counts = report.get("outcome_counts", {})
+    signals = report.get("signals", {})
+    wallets = status.get("smart_wallet_report", {})
+    lines = [
+        "📊 Beefy Signal Results",
+        "",
+        f"Tracked alerts: {report.get('tracked_alerts', 0)}",
+        (
+            "Outcomes: "
+            f"15m {counts.get(15, 0)} · 1h {counts.get(60, 0)} · "
+            f"6h {counts.get(360, 0)} · 24h {counts.get(1440, 0)}"
+        ),
+        (
+            f"Current WATCH/BUY: {status.get('watch_threshold', scanner_config.min_alert_score):.0f}/"
+            f"{status.get('buy_threshold', scanner_config.strong_alert_score):.0f}"
+        ),
+    ]
+    for signal in ("EARLY WATCH", "STRONG WATCH"):
+        metrics = (signals.get(signal) or {}).get(1440)
+        if metrics:
+            label = "WATCH" if signal == "EARLY WATCH" else "BUY"
+            lines.append(
+                f"{label} 24h ({metrics['samples']}): win {metrics['win_rate']:.1f}% · "
+                f"median {metrics['median_return']:+.1f}% · MFE {metrics['median_mfe']:+.1f}% · "
+                f"MAE {metrics['median_mae']:+.1f}%"
+            )
+    lines.extend(
+        [
+            "",
+            (
+                f"Wallet cohort: {wallets.get('observed', 0)} observed · "
+                f"{wallets.get('evaluated', 0)} evaluated · {wallets.get('qualified', 0)} qualified"
+            ),
+            (
+                f"Calibration: {status.get('calibration_samples', 0)}/"
+                f"{scanner_config.calibration_min_samples} completed 24h samples"
+            ),
+        ]
+    )
+    await update.message.reply_text("\n".join(lines))
 
 
 async def scannow_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -791,6 +845,7 @@ def register_handlers():
     application.add_handler(CommandHandler("broadcast", broadcast_command))
     application.add_handler(CommandHandler("settings", settings))
     application.add_handler(CommandHandler("scannerstatus", scannerstatus_command))
+    application.add_handler(CommandHandler("signalstats", signalstats_command))
     application.add_handler(CommandHandler("scannow", scannow_command))
     application.add_handler(CommandHandler("alerttest", alerttest_command))
     application.add_handler(CallbackQueryHandler(button))

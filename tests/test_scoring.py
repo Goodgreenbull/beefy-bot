@@ -8,6 +8,15 @@ from scanner.scoring import SignalScorer
 
 NOW = datetime(2026, 8, 29, 12, 0, tzinfo=timezone.utc)
 TOKEN = "0x1111111111111111111111111111111111111111"
+CLEAN_SECURITY = {
+    "checked": True,
+    "is_honeypot": False,
+    "cannot_buy": False,
+    "cannot_sell": False,
+    "sell_tax": 0,
+    "risk_level": 0,
+    "open_source": True,
+}
 
 
 def snapshot(**overrides):
@@ -25,6 +34,7 @@ def snapshot(**overrides):
         "price_change_1h": 40,
         "social_links": 3,
         "smart_wallet_buys": 2,
+        "raw": {"security": CLEAN_SECURITY.copy()},
     }
     values.update(overrides)
     return MarketSnapshot(**values)
@@ -92,9 +102,50 @@ class SignalScorerTests(unittest.TestCase):
         )
         result = self.scorer.score(
             candidate,
-            snapshot(buys_5m=4, sells_5m=0, social_velocity=8, smart_wallet_buys=5),
+            snapshot(buys_5m=6, sells_5m=0, social_velocity=8, smart_wallet_buys=5),
             [],
             now=NOW,
         )
         self.assertTrue(result.eligible)
         self.assertEqual(result.signal, "EARLY WATCH")
+
+    def test_honeypot_never_alerts_even_with_strong_flow(self):
+        candidate = Candidate(
+            chain="base", token_address=TOKEN, source="clanker", launch_at=NOW
+        )
+        unsafe = CLEAN_SECURITY | {"is_honeypot": True, "risk_level": 100}
+        result = self.scorer.score(
+            candidate, snapshot(raw={"security": unsafe}), [], now=NOW
+        )
+        self.assertFalse(result.eligible)
+        self.assertIn("honeypot simulation failed", result.blockers)
+
+    def test_copycat_penalty_can_suppress_otherwise_eligible_alert(self):
+        candidate = Candidate(
+            chain="base",
+            token_address=TOKEN,
+            source="bankr",
+            launch_at=NOW,
+            metadata={
+                "identity_risk": {
+                    "copycat_penalty": 24,
+                    "reason": "2 recent exact name/ticker duplicates",
+                }
+            },
+        )
+        result = self.scorer.score(candidate, snapshot(), [], now=NOW)
+        self.assertFalse(result.eligible)
+        self.assertIn("duplicates", " ".join(result.blockers))
+
+    def test_missing_project_identity_does_not_alert_on_flow_alone(self):
+        candidate = Candidate(
+            chain="base", token_address=TOKEN, source="rpc-pairs:base:v2", launch_at=NOW
+        )
+        result = self.scorer.score(
+            candidate,
+            snapshot(social_links=0, smart_wallet_buys=0),
+            [],
+            now=NOW,
+        )
+        self.assertFalse(result.eligible)
+        self.assertIn("no project/social", " ".join(result.blockers))
