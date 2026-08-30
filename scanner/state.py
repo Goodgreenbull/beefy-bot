@@ -50,7 +50,9 @@ class SQLiteState:
                 metadata_json TEXT NOT NULL DEFAULT '{}',
                 last_score REAL,
                 last_stage TEXT,
-                last_signal TEXT
+                last_signal TEXT,
+                first_detected_market_cap_usd REAL,
+                first_detected_market_at TEXT
             );
             CREATE INDEX IF NOT EXISTS idx_candidates_launch ON candidates(launch_at);
             CREATE INDEX IF NOT EXISTS idx_candidates_seen ON candidates(first_seen_at);
@@ -80,6 +82,20 @@ class SQLiteState:
                 smart_wallet_buys INTEGER NOT NULL,
                 smart_wallet_sells INTEGER NOT NULL,
                 smart_wallet_net_usd REAL NOT NULL,
+                unique_buyers_5m INTEGER NOT NULL DEFAULT 0,
+                unique_buyers_15m INTEGER NOT NULL DEFAULT 0,
+                unique_sellers_5m INTEGER NOT NULL DEFAULT 0,
+                unique_sellers_15m INTEGER NOT NULL DEFAULT 0,
+                net_new_wallets_5m INTEGER NOT NULL DEFAULT 0,
+                net_new_wallets_15m INTEGER NOT NULL DEFAULT 0,
+                holder_count INTEGER,
+                exact_ca_mentions_5m INTEGER NOT NULL DEFAULT 0,
+                exact_ca_mentions_15m INTEGER NOT NULL DEFAULT 0,
+                credible_social_mentions_5m INTEGER NOT NULL DEFAULT 0,
+                creator_reputation REAL NOT NULL DEFAULT 0,
+                narrative_score REAL NOT NULL DEFAULT 0,
+                deployer_sells_15m INTEGER NOT NULL DEFAULT 0,
+                flow_checked INTEGER NOT NULL DEFAULT 0,
                 source TEXT NOT NULL,
                 raw_json TEXT NOT NULL DEFAULT '{}',
                 FOREIGN KEY(candidate_key) REFERENCES candidates(candidate_key)
@@ -97,6 +113,10 @@ class SQLiteState:
                 entry_price_usd REAL,
                 entry_market_cap_usd REAL,
                 entry_liquidity_usd REAL,
+                first_detected_market_cap_usd REAL,
+                alert_market_cap_usd REAL,
+                current_market_cap_usd REAL,
+                peak_after_alert_market_cap_usd REAL,
                 mfe_pct REAL,
                 mae_pct REAL,
                 payload_json TEXT NOT NULL,
@@ -185,6 +205,32 @@ class SQLiteState:
         self._ensure_column("alerts", "entry_price_usd", "REAL")
         self._ensure_column("alerts", "entry_market_cap_usd", "REAL")
         self._ensure_column("alerts", "entry_liquidity_usd", "REAL")
+        self._ensure_column("candidates", "first_detected_market_cap_usd", "REAL")
+        self._ensure_column("candidates", "first_detected_market_at", "TEXT")
+        for column, declaration in (
+            ("unique_buyers_5m", "INTEGER NOT NULL DEFAULT 0"),
+            ("unique_buyers_15m", "INTEGER NOT NULL DEFAULT 0"),
+            ("unique_sellers_5m", "INTEGER NOT NULL DEFAULT 0"),
+            ("unique_sellers_15m", "INTEGER NOT NULL DEFAULT 0"),
+            ("net_new_wallets_5m", "INTEGER NOT NULL DEFAULT 0"),
+            ("net_new_wallets_15m", "INTEGER NOT NULL DEFAULT 0"),
+            ("holder_count", "INTEGER"),
+            ("exact_ca_mentions_5m", "INTEGER NOT NULL DEFAULT 0"),
+            ("exact_ca_mentions_15m", "INTEGER NOT NULL DEFAULT 0"),
+            ("credible_social_mentions_5m", "INTEGER NOT NULL DEFAULT 0"),
+            ("creator_reputation", "REAL NOT NULL DEFAULT 0"),
+            ("narrative_score", "REAL NOT NULL DEFAULT 0"),
+            ("deployer_sells_15m", "INTEGER NOT NULL DEFAULT 0"),
+            ("flow_checked", "INTEGER NOT NULL DEFAULT 0"),
+        ):
+            self._ensure_column("snapshots", column, declaration)
+        for column in (
+            "first_detected_market_cap_usd",
+            "alert_market_cap_usd",
+            "current_market_cap_usd",
+            "peak_after_alert_market_cap_usd",
+        ):
+            self._ensure_column("alerts", column, "REAL")
         self._ensure_column("alerts", "mfe_pct", "REAL")
         self._ensure_column("alerts", "mae_pct", "REAL")
         self._ensure_column("alert_outcomes", "capture_lag_minutes", "REAL")
@@ -245,6 +291,9 @@ class SQLiteState:
 
     @staticmethod
     def _candidate_from_row(row: sqlite3.Row) -> Candidate:
+        metadata = json.loads(row["metadata_json"] or "{}")
+        metadata["first_detected_market_cap_usd"] = row["first_detected_market_cap_usd"]
+        metadata["first_detected_market_at"] = row["first_detected_market_at"]
         return Candidate(
             chain=row["chain"],
             token_address=row["token_address"],
@@ -256,7 +305,7 @@ class SQLiteState:
             symbol=row["symbol"],
             deployer=row["deployer"],
             chart_url=row["chart_url"],
-            metadata=json.loads(row["metadata_json"] or "{}"),
+            metadata=metadata,
         )
 
     def list_active_candidates(self, max_age_hours: int, limit: int) -> list[Candidate]:
@@ -341,6 +390,17 @@ class SQLiteState:
         return [self._candidate_from_row(row) for row in rows]
 
     def add_snapshot(self, candidate_key: str, snapshot: MarketSnapshot) -> None:
+        market_cap = snapshot.market_cap_usd or snapshot.fdv_usd
+        if market_cap and market_cap > 0:
+            self.connection.execute(
+                """
+                UPDATE candidates SET
+                    first_detected_market_cap_usd = COALESCE(first_detected_market_cap_usd, ?),
+                    first_detected_market_at = COALESCE(first_detected_market_at, ?)
+                WHERE candidate_key = ?
+                """,
+                (market_cap, snapshot.captured_at.isoformat(), candidate_key),
+            )
         self.connection.execute(
             """
             INSERT INTO snapshots (
@@ -349,8 +409,13 @@ class SQLiteState:
                 volume_24h_usd, buys_5m, sells_5m, buys_1h, sells_1h,
                 price_change_5m, price_change_1h, price_change_24h, social_links,
                 boost_score, social_velocity, smart_wallet_buys, smart_wallet_sells,
-                smart_wallet_net_usd, source, raw_json
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                smart_wallet_net_usd, unique_buyers_5m, unique_buyers_15m,
+                unique_sellers_5m, unique_sellers_15m, net_new_wallets_5m,
+                net_new_wallets_15m, holder_count, exact_ca_mentions_5m,
+                exact_ca_mentions_15m, credible_social_mentions_5m,
+                creator_reputation, narrative_score, deployer_sells_15m,
+                flow_checked, source, raw_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 candidate_key,
@@ -376,6 +441,20 @@ class SQLiteState:
                 snapshot.smart_wallet_buys,
                 snapshot.smart_wallet_sells,
                 snapshot.smart_wallet_net_usd,
+                snapshot.unique_buyers_5m,
+                snapshot.unique_buyers_15m,
+                snapshot.unique_sellers_5m,
+                snapshot.unique_sellers_15m,
+                snapshot.net_new_wallets_5m,
+                snapshot.net_new_wallets_15m,
+                snapshot.holder_count,
+                snapshot.exact_ca_mentions_5m,
+                snapshot.exact_ca_mentions_15m,
+                snapshot.credible_social_mentions_5m,
+                snapshot.creator_reputation,
+                snapshot.narrative_score,
+                snapshot.deployer_sells_15m,
+                int(snapshot.flow_checked),
                 snapshot.source,
                 json.dumps(snapshot.raw, separators=(",", ":")),
             ),
@@ -413,6 +492,20 @@ class SQLiteState:
                 smart_wallet_buys=row["smart_wallet_buys"],
                 smart_wallet_sells=row["smart_wallet_sells"],
                 smart_wallet_net_usd=row["smart_wallet_net_usd"],
+                unique_buyers_5m=row["unique_buyers_5m"],
+                unique_buyers_15m=row["unique_buyers_15m"],
+                unique_sellers_5m=row["unique_sellers_5m"],
+                unique_sellers_15m=row["unique_sellers_15m"],
+                net_new_wallets_5m=row["net_new_wallets_5m"],
+                net_new_wallets_15m=row["net_new_wallets_15m"],
+                holder_count=row["holder_count"],
+                exact_ca_mentions_5m=row["exact_ca_mentions_5m"],
+                exact_ca_mentions_15m=row["exact_ca_mentions_15m"],
+                credible_social_mentions_5m=row["credible_social_mentions_5m"],
+                creator_reputation=row["creator_reputation"],
+                narrative_score=row["narrative_score"],
+                deployer_sells_15m=row["deployer_sells_15m"],
+                flow_checked=bool(row["flow_checked"]),
                 source=row["source"],
                 raw=json.loads(row["raw_json"] or "{}"),
             )
@@ -527,6 +620,52 @@ class SQLiteState:
             "serial_deployer_launches": serial_launches,
         }
 
+    def deployer_reputation(self, candidate: Candidate) -> dict[str, Any]:
+        if not candidate.deployer:
+            return {"identified": False, "samples": 0, "score": 0.0}
+        rows = self.connection.execute(
+            """
+            SELECT c.candidate_key, o.return_pct, o.mfe_pct
+            FROM candidates c
+            JOIN alerts a ON a.candidate_key = c.candidate_key
+            JOIN alert_outcomes o ON o.alert_id = a.id AND o.horizon_minutes = 1440
+            WHERE c.chain = ? AND c.deployer = ?
+              AND c.candidate_key != ?
+              AND o.return_pct IS NOT NULL
+              AND COALESCE(o.capture_lag_minutes, 0) <= 120
+            ORDER BY o.captured_at DESC
+            LIMIT 100
+            """,
+            (candidate.chain, candidate.deployer, candidate.key),
+        ).fetchall()
+        distinct: dict[str, sqlite3.Row] = {}
+        for row in rows:
+            distinct.setdefault(str(row["candidate_key"]), row)
+        values = list(distinct.values())
+        samples = len(values)
+        if not values:
+            return {"identified": True, "samples": 0, "score": 0.0}
+        returns = [float(row["return_pct"]) for row in values]
+        win_rate = sum(value > 0 for value in returns) / samples
+        average_return = sum(returns) / samples
+        score = 0.0
+        if samples >= 3:
+            score = max(0.0, min(1.0, win_rate * 0.65 + max(-0.25, min(0.35, average_return / 200))))
+        return {
+            "identified": True,
+            "samples": samples,
+            "win_rate": round(win_rate, 3),
+            "average_return_pct": round(average_return, 1),
+            "score": round(score, 3),
+        }
+
+    def first_detected_market_cap(self, candidate_key: str) -> float | None:
+        row = self.connection.execute(
+            "SELECT first_detected_market_cap_usd FROM candidates WHERE candidate_key = ?",
+            (candidate_key,),
+        ).fetchone()
+        return float(row["first_detected_market_cap_usd"]) if row and row[0] is not None else None
+
     def update_score(self, candidate_key: str, result: ScoreResult) -> None:
         self.connection.execute(
             "UPDATE candidates SET last_score = ?, last_stage = ?, last_signal = ? WHERE candidate_key = ?",
@@ -569,13 +708,22 @@ class SQLiteState:
         snapshot: MarketSnapshot | None = None,
     ) -> int:
         market_cap = (snapshot.market_cap_usd or snapshot.fdv_usd) if snapshot else None
+        first_detected = self.connection.execute(
+            "SELECT first_detected_market_cap_usd FROM candidates WHERE candidate_key = ?",
+            (candidate_key,),
+        ).fetchone()
+        first_detected_market_cap = (
+            first_detected["first_detected_market_cap_usd"] if first_detected else None
+        )
         self.connection.execute(
             """
             INSERT INTO alerts(
                 candidate_key, sent_at, stage, signal, score,
                 entry_price_usd, entry_market_cap_usd, entry_liquidity_usd,
+                first_detected_market_cap_usd, alert_market_cap_usd,
+                current_market_cap_usd, peak_after_alert_market_cap_usd,
                 mfe_pct, mae_pct, payload_json
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 candidate_key,
@@ -586,6 +734,10 @@ class SQLiteState:
                 snapshot.price_usd if snapshot else None,
                 market_cap,
                 snapshot.liquidity_usd if snapshot else None,
+                first_detected_market_cap,
+                market_cap,
+                market_cap,
+                market_cap,
                 0.0 if snapshot and snapshot.price_usd else None,
                 0.0 if snapshot and snapshot.price_usd else None,
                 json.dumps(result.to_dict(), separators=(",", ":")),
@@ -609,7 +761,8 @@ class SQLiteState:
         cutoff = (snapshot.captured_at - timedelta(hours=48)).isoformat()
         rows = self.connection.execute(
             """
-            SELECT id, sent_at, entry_price_usd, mfe_pct, mae_pct
+            SELECT id, sent_at, entry_price_usd, mfe_pct, mae_pct,
+                   peak_after_alert_market_cap_usd
             FROM alerts
             WHERE candidate_key = ? AND sent_at >= ? AND entry_price_usd > 0
             """,
@@ -626,8 +779,19 @@ class SQLiteState:
             mfe = max(float(row["mfe_pct"] or 0.0), return_pct)
             mae = min(float(row["mae_pct"] or 0.0), return_pct)
             self.connection.execute(
-                "UPDATE alerts SET mfe_pct = ?, mae_pct = ? WHERE id = ?",
-                (mfe, mae, row["id"]),
+                """
+                UPDATE alerts SET
+                    mfe_pct = ?,
+                    mae_pct = ?,
+                    current_market_cap_usd = COALESCE(?, current_market_cap_usd),
+                    peak_after_alert_market_cap_usd = CASE
+                        WHEN ? IS NULL THEN peak_after_alert_market_cap_usd
+                        WHEN peak_after_alert_market_cap_usd IS NULL THEN ?
+                        ELSE MAX(peak_after_alert_market_cap_usd, ?)
+                    END
+                WHERE id = ?
+                """,
+                (mfe, mae, market_cap, market_cap, market_cap, market_cap, row["id"]),
             )
             elapsed_minutes = (snapshot.captured_at - sent_at).total_seconds() / 60.0
             for horizon in horizons:
@@ -925,10 +1089,27 @@ class SQLiteState:
                     "median_mae": round(median(maes), 1),
                 }
         tracked = int(self.connection.execute("SELECT COUNT(*) FROM alerts WHERE entry_price_usd IS NOT NULL").fetchone()[0])
-        return {"tracked_alerts": tracked, "outcome_counts": outcome_counts, "signals": summaries}
+        cap_rows = self.connection.execute(
+            """
+            SELECT a.candidate_key, c.symbol, a.sent_at,
+                   a.first_detected_market_cap_usd, a.alert_market_cap_usd,
+                   a.current_market_cap_usd, a.peak_after_alert_market_cap_usd
+            FROM alerts a
+            JOIN candidates c ON c.candidate_key = a.candidate_key
+            ORDER BY a.sent_at DESC LIMIT 10
+            """
+        ).fetchall()
+        market_cap_audit = [dict(row) for row in cap_rows]
+        return {
+            "tracked_alerts": tracked,
+            "outcome_counts": outcome_counts,
+            "signals": summaries,
+            "market_cap_audit": market_cap_audit,
+        }
 
     def calibrated_thresholds(self, config: Any) -> dict[str, Any]:
         defaults = {
+            "scout": float(config.scout_alert_score),
             "watch": float(config.min_alert_score),
             "buy": float(config.strong_alert_score),
             "samples": 0,
@@ -949,41 +1130,8 @@ class SQLiteState:
         sample_count = len(rows)
         defaults["samples"] = sample_count
         minimum = int(getattr(config, "calibration_min_samples", 30))
-        if sample_count < minimum:
-            return defaults
-
-        def metrics(cutoff: int) -> tuple[int, float, float, float, float]:
-            selected = [row for row in rows if float(row["score"]) >= cutoff]
-            if not selected:
-                return 0, 0.0, 0.0, 0.0, 0.0
-            returns = [float(row["return_pct"]) for row in selected]
-            return (
-                len(selected),
-                sum(value > 0 for value in returns) / len(returns),
-                median(returns),
-                median(float(row["mfe_pct"] or 0.0) for row in selected),
-                median(float(row["mae_pct"] or 0.0) for row in selected),
-            )
-
-        watch = None
-        for cutoff in range(int(config.min_alert_score), 89):
-            count, win_rate, med_return, med_mfe, _ = metrics(cutoff)
-            if count >= max(15, minimum // 2) and win_rate >= 0.35 and med_return >= 0 and med_mfe >= 20:
-                watch = float(cutoff)
-                break
-        if watch is None:
-            watch = min(88.0, float(config.min_alert_score) + 4.0)
-
-        buy = None
-        start = max(int(config.strong_alert_score), int(watch) + 6)
-        for cutoff in range(start, 95):
-            count, win_rate, med_return, med_mfe, med_mae = metrics(cutoff)
-            if count >= max(10, minimum // 3) and win_rate >= 0.50 and med_return >= 10 and med_mfe >= 35 and med_mae > -45:
-                buy = float(cutoff)
-                break
-        if buy is None:
-            buy = min(94.0, max(float(config.strong_alert_score) + 4.0, watch + 6.0))
-        return {"watch": watch, "buy": buy, "samples": sample_count, "calibrated": True}
+        defaults["calibrated"] = sample_count >= minimum
+        return defaults
 
     def get_cursor(self, key: str) -> str | None:
         row = self.connection.execute("SELECT cursor_value FROM cursors WHERE cursor_key = ?", (key,)).fetchone()

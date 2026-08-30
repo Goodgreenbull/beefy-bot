@@ -453,7 +453,9 @@ async def scannerstatus_command(update: Update, context: ContextTypes.DEFAULT_TY
         f"Snapshots (24h): {status.get('snapshots_24h', 0)}\n"
         f"Alerts (24h): {status.get('alerts_24h', 0)}\n"
         f"Outcome observations (24h): {status.get('outcomes_24h', 0)}\n"
-        f"WATCH/BUY thresholds: {status.get('watch_threshold', scanner_config.min_alert_score):.0f}/"
+        f"SCOUT/ACTION/A+ thresholds: "
+        f"{status.get('scout_threshold', scanner_config.scout_alert_score):.0f}/"
+        f"{status.get('watch_threshold', scanner_config.min_alert_score):.0f}/"
         f"{status.get('buy_threshold', scanner_config.strong_alert_score):.0f}\n"
         f"{health_line}"
     )
@@ -471,6 +473,17 @@ async def signalstats_command(update: Update, context: ContextTypes.DEFAULT_TYPE
     counts = report.get("outcome_counts", {})
     signals = report.get("signals", {})
     wallets = status.get("smart_wallet_report", {})
+
+    def market_cap_text(value):
+        if value is None:
+            return "n/a"
+        amount = float(value)
+        if amount >= 1_000_000:
+            return f"${amount / 1_000_000:.2f}m"
+        if amount >= 1_000:
+            return f"${amount / 1_000:.1f}k"
+        return f"${amount:,.0f}"
+
     lines = [
         "📊 Beefy Signal Results",
         "",
@@ -481,18 +494,30 @@ async def signalstats_command(update: Update, context: ContextTypes.DEFAULT_TYPE
             f"6h {counts.get(360, 0)} · 24h {counts.get(1440, 0)}"
         ),
         (
-            f"Current WATCH/BUY: {status.get('watch_threshold', scanner_config.min_alert_score):.0f}/"
+            f"Current SCOUT/ACTION/A+: "
+            f"{status.get('scout_threshold', scanner_config.scout_alert_score):.0f}/"
+            f"{status.get('watch_threshold', scanner_config.min_alert_score):.0f}/"
             f"{status.get('buy_threshold', scanner_config.strong_alert_score):.0f}"
         ),
     ]
-    for signal in ("EARLY WATCH", "STRONG WATCH"):
+    for signal in ("SCOUT", "ACTION", "A+"):
         metrics = (signals.get(signal) or {}).get(1440)
         if metrics:
-            label = "WATCH" if signal == "EARLY WATCH" else "BUY"
             lines.append(
-                f"{label} 24h ({metrics['samples']}): win {metrics['win_rate']:.1f}% · "
+                f"{signal} 24h ({metrics['samples']}): win {metrics['win_rate']:.1f}% · "
                 f"median {metrics['median_return']:+.1f}% · MFE {metrics['median_mfe']:+.1f}% · "
                 f"MAE {metrics['median_mae']:+.1f}%"
+            )
+    market_cap_audit = report.get("market_cap_audit", [])
+    if market_cap_audit:
+        lines.extend(["", "Latest alert MC audit (actual alert basis):"])
+        for item in market_cap_audit[:3]:
+            label = item.get("symbol") or str(item.get("candidate_key", "token"))[-8:]
+            lines.append(
+                f"{label}: first {market_cap_text(item.get('first_detected_market_cap_usd'))} · "
+                f"alert {market_cap_text(item.get('alert_market_cap_usd'))} · "
+                f"now {market_cap_text(item.get('current_market_cap_usd'))} · "
+                f"peak {market_cap_text(item.get('peak_after_alert_market_cap_usd'))}"
             )
     lines.extend(
         [

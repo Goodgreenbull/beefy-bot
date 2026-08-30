@@ -11,12 +11,14 @@ from scanner.feeds import (
     FactoryLaunchFeed,
     O1_FACTORIES,
     O1_LAUNCHED_TOPIC,
+    OnchainFlowEnricher,
     RpcPairFeed,
     TokenRiskEnricher,
+    TRANSFER_TOPIC,
     platform_factory_specs,
     PAIR_CREATED_TOPIC,
 )
-from scanner.models import Candidate
+from scanner.models import Candidate, MarketSnapshot
 from scanner.state import SQLiteState
 
 
@@ -131,6 +133,56 @@ class PlatformSession:
                     ],
                 }
             )
+        raise AssertionError(f"Unexpected method {json['method']}")
+
+
+class FlowSession:
+    def post(self, url, json):
+        if isinstance(json, list):
+            return FakeResponse(
+                [
+                    {
+                        "jsonrpc": "2.0",
+                        "id": item["id"],
+                        "result": {"from": f"0x{item['id'] + 100:040x}"},
+                    }
+                    for item in json
+                ]
+            )
+        if json["method"] == "eth_blockNumber":
+            return FakeResponse({"jsonrpc": "2.0", "id": 1, "result": hex(1_000)})
+        if json["method"] == "eth_getLogs":
+            topics = json["params"][0]["topics"]
+            pair_topic = "0x" + PAIR.removeprefix("0x").rjust(64, "0")
+            if len(topics) == 2:
+                rows = [
+                    {
+                        "address": TOKEN,
+                        "topics": [
+                            TRANSFER_TOPIC,
+                            pair_topic,
+                            "0x" + f"{index + 200:040x}".rjust(64, "0"),
+                        ],
+                        "blockNumber": hex(900 + index * 20),
+                        "transactionHash": f"0xbuy{index}",
+                    }
+                    for index in range(3)
+                ]
+            else:
+                deployer = "0x5555555555555555555555555555555555555555"
+                rows = [
+                    {
+                        "address": TOKEN,
+                        "topics": [
+                            TRANSFER_TOPIC,
+                            "0x" + deployer.removeprefix("0x").rjust(64, "0"),
+                            pair_topic,
+                        ],
+                        "blockNumber": hex(940),
+                        "transactionHash": "0xsell0",
+                    }
+                ]
+            return FakeResponse({"jsonrpc": "2.0", "id": 1, "result": rows})
         raise AssertionError(f"Unexpected method {json['method']}")
 
 
@@ -262,6 +314,25 @@ class FeedTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(profile.is_honeypot)
         self.assertEqual(profile.sell_tax, 3)
         self.assertTrue(profile.open_source)
+
+    async def test_onchain_flow_measures_unique_wallets_and_deployer_selling(self):
+        config = ScannerConfig(flow_5m_blocks=150, flow_15m_blocks=450)
+        candidate = Candidate(
+            chain="base",
+            token_address=TOKEN,
+            pair_address=PAIR,
+            source="bankr",
+            deployer="0x5555555555555555555555555555555555555555",
+        )
+        result = await OnchainFlowEnricher(config).enrich(
+            FlowSession(),
+            candidate,
+            MarketSnapshot(chain="base", token_address=TOKEN, pair_address=PAIR),
+        )
+        self.assertTrue(result["flow_checked"])
+        self.assertEqual(result["unique_buyers_5m"], 3)
+        self.assertEqual(result["unique_sellers_5m"], 1)
+        self.assertEqual(result["deployer_sells_15m"], 1)
 
     async def test_malformed_security_responses_are_not_treated_as_clean(self):
         class ErrorSession:

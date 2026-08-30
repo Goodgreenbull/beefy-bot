@@ -38,6 +38,7 @@ class FakeEnricher:
                     "checked": True,
                     "admin_checks_complete": True,
                     "simulation_checked": True,
+                    "sell_simulation_success": True,
                     "is_honeypot": False,
                     "cannot_buy": False,
                     "cannot_sell": False,
@@ -46,6 +47,18 @@ class FakeEnricher:
                     "open_source": True,
                 }
             },
+            unique_buyers_5m=10,
+            unique_buyers_15m=16,
+            unique_sellers_5m=2,
+            unique_sellers_15m=4,
+            net_new_wallets_5m=8,
+            net_new_wallets_15m=12,
+            exact_ca_mentions_5m=3,
+            exact_ca_mentions_15m=4,
+            credible_social_mentions_5m=1,
+            creator_reputation=0.7,
+            narrative_score=0.7,
+            flow_checked=True,
         )
 
 

@@ -17,6 +17,7 @@ from .feeds import (
     FactoryLaunchFeed,
     FlaunchFeed,
     GeckoTerminalNewPoolsFeed,
+    OnchainFlowEnricher,
     RpcPairFeed,
     SignalOverlay,
     SmartWalletMonitor,
@@ -48,6 +49,7 @@ class ScannerService:
         self.lock = asyncio.Lock()
         self.enricher = DexScreenerEnricher(config)
         self.risk_enricher = TokenRiskEnricher(config)
+        self.flow_enricher = OnchainFlowEnricher(config)
         self.scorer = SignalScorer(config)
         self.overlay = SignalOverlay(config.overlay_url)
         self.smart_wallet_monitor = SmartWalletMonitor(config)
@@ -145,6 +147,56 @@ class ScannerService:
         snapshot.smart_wallet_net_usd += _number(
             overlay.get("smartWalletNetUsd", overlay.get("smart_wallet_net_usd", 0))
         ) + _number(wallet_signal.get("smart_wallet_net_usd", 0))
+        snapshot.exact_ca_mentions_5m = _integer(
+            overlay.get("exactCaMentions5m", overlay.get("exact_ca_mentions_5m", 0))
+        )
+        snapshot.exact_ca_mentions_15m = _integer(
+            overlay.get("exactCaMentions15m", overlay.get("exact_ca_mentions_15m", 0))
+        )
+        snapshot.credible_social_mentions_5m = _integer(
+            overlay.get(
+                "credibleSocialMentions5m",
+                overlay.get("credible_social_mentions_5m", 0),
+            )
+        )
+        snapshot.creator_reputation = max(
+            snapshot.creator_reputation,
+            min(1.0, max(0.0, _number(overlay.get("creatorReputation", 0)))),
+        )
+        snapshot.narrative_score = max(
+            snapshot.narrative_score,
+            min(1.0, max(0.0, _number(overlay.get("narrativeScore", 0)))),
+        )
+        snapshot.raw["creator_activity_score"] = min(
+            1.0,
+            max(
+                0.0,
+                _number(
+                    overlay.get(
+                        "creatorActivityScore",
+                        overlay.get("creator_activity_score", 0),
+                    )
+                ),
+            ),
+        )
+        snapshot.deployer_sells_15m += _integer(
+            overlay.get("deployerSells15m", overlay.get("deployer_sells_15m", 0))
+        )
+
+    @staticmethod
+    def _apply_flow_signals(snapshot: MarketSnapshot, flow: dict | None) -> None:
+        flow = flow or {}
+        for field in (
+            "unique_buyers_5m",
+            "unique_buyers_15m",
+            "unique_sellers_5m",
+            "unique_sellers_15m",
+            "net_new_wallets_5m",
+            "net_new_wallets_15m",
+            "deployer_sells_15m",
+        ):
+            setattr(snapshot, field, _integer(flow.get(field), getattr(snapshot, field)))
+        snapshot.flow_checked = bool(flow.get("flow_checked", snapshot.flow_checked))
 
     async def run_cycle(self) -> dict:
         if self.lock.locked():
@@ -187,6 +239,65 @@ class ScannerService:
                 wallet_signals = {}
                 self.state.mark_feed_error("smart-wallets", error)
 
+            direct_sources = {
+                "bankr",
+                "flaunch",
+                "clanker",
+                "baseline",
+                "o1-b20",
+                "o1-robinhood",
+                "o1-robinhood-stocks",
+                "pools-fun",
+                "basestonk",
+            }
+            flow_targets = sorted(
+                [
+                    (candidate, snapshot)
+                    for candidate, snapshot, _ in enriched
+                    if snapshot is not None
+                    and len(snapshot.pair_address or candidate.pair_address or "") == 42
+                    and snapshot.price_usd
+                    and snapshot.liquidity_usd >= self.config.min_liquidity_usd
+                ],
+                key=lambda item: (
+                    int(bool(set(item[0].source.split(",")) & direct_sources)) * 10
+                    + _integer(
+                        (overlays.get(item[0].key) or {}).get("exactCaMentions5m"),
+                        0,
+                    ) * 3
+                    + _integer(
+                        (overlays.get(item[0].key) or {}).get("credibleSocialMentions5m"),
+                        0,
+                    ) * 5
+                    + int(
+                        _number(
+                            (overlays.get(item[0].key) or {}).get("creatorActivityScore"),
+                            0,
+                        ) * 5
+                    ),
+                    item[1].social_links,
+                    item[1].buys_5m + item[1].sells_5m,
+                    item[1].volume_5m_usd,
+                ),
+                reverse=True,
+            )[: self.config.max_flow_checks_per_cycle]
+            flow_results = await asyncio.gather(
+                *(
+                    self.flow_enricher.enrich(self.session, candidate, snapshot)
+                    for candidate, snapshot in flow_targets
+                ),
+                return_exceptions=True,
+            )
+            flow_signals: dict[str, dict] = {}
+            flow_errors = [item for item in flow_results if isinstance(item, Exception)]
+            for (candidate, _), flow in zip(flow_targets, flow_results):
+                if isinstance(flow, dict):
+                    flow_signals[candidate.key] = flow
+            if flow_signals or not flow_targets:
+                self.state.mark_feed_success("onchain-flow", len(flow_signals))
+            elif flow_errors:
+                self.state.mark_feed_error("onchain-flow", flow_errors[0])
+
             thresholds = self.state.calibrated_thresholds(self.config)
             enriched_count = 0
             alert_count = 0
@@ -225,7 +336,13 @@ class ScannerService:
                     overlays.get(candidate.key),
                     wallet_signals.get(candidate.key),
                 )
+                self._apply_flow_signals(snapshot, flow_signals.get(candidate.key))
                 candidate.metadata["identity_risk"] = self.state.identity_risk(candidate)
+                candidate.metadata["deployer_reputation"] = self.state.deployer_reputation(candidate)
+                snapshot.creator_reputation = max(
+                    snapshot.creator_reputation,
+                    _number(candidate.metadata["deployer_reputation"].get("score"), 0.0),
+                )
                 self.state.upsert_candidate(candidate)
                 history = self.state.recent_snapshots(candidate.key)
                 cached_risk = self.state.get_security_profile(
@@ -233,12 +350,14 @@ class ScannerService:
                 )
                 if cached_risk:
                     snapshot.raw["security"] = cached_risk.to_record()
+                    snapshot.holder_count = cached_risk.holder_count
                 pre_result = self.scorer.score(
                     candidate,
                     snapshot,
                     history,
                     min_alert_score=thresholds["watch"],
                     strong_alert_score=thresholds["buy"],
+                    scout_alert_score=thresholds["scout"],
                 )
                 prepared.append((candidate, snapshot, history, pre_result))
 
@@ -275,6 +394,7 @@ class ScannerService:
                     self.state.mark_feed_error("token-safety", profile)
                     continue
                 snapshot.raw["security"] = profile.to_record()
+                snapshot.holder_count = profile.holder_count
                 if profile.checked:
                     self.state.upsert_security_profile(profile)
                     self.state.mark_feed_success("token-safety", 1)
@@ -286,8 +406,12 @@ class ScannerService:
                     history,
                     min_alert_score=thresholds["watch"],
                     strong_alert_score=thresholds["buy"],
+                    scout_alert_score=thresholds["scout"],
                 )
                 self.state.add_snapshot(candidate.key, snapshot)
+                candidate.metadata["first_detected_market_cap_usd"] = (
+                    self.state.first_detected_market_cap(candidate.key)
+                )
                 outcome_count += self.state.update_alert_outcomes(candidate.key, snapshot)
                 self.state.update_score(candidate.key, result)
                 if (
@@ -343,6 +467,7 @@ class ScannerService:
                 "outcomes": outcome_count,
                 "watch_threshold": thresholds["watch"],
                 "buy_threshold": thresholds["buy"],
+                "scout_threshold": thresholds["scout"],
                 "calibration_samples": thresholds["samples"],
                 "calibrated": thresholds["calibrated"],
                 "errors": sum(1 for item in self.state.health() if item.get("last_error")),

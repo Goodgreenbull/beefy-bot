@@ -2,7 +2,7 @@
 
 Beefy Bot remains the Good Green Bull Telegram community bot and now includes an alerts-only first-leg scanner for Base and Robinhood Chain, tuned for Render's free web-service tier.
 
-It does **not** hold a wallet, sign transactions, or auto-trade. The scanner produces watch alerts for human review.
+It does **not** hold a wallet, sign transactions, or auto-trade. The scanner produces evidence-ranked alerts for human review.
 
 ## What changed
 
@@ -13,9 +13,10 @@ The quality-v2 free profile scans every five minutes and separates the job into:
 1. Direct discovery from Bankr, Flaunch, Clanker, Baseline, verified o1/B20 factory events, GeckoTerminal, DexScreener profiles, and allowlisted V2/V3 factory events.
 2. SQLite state for candidates, rolling market snapshots, feed cursors, scores, feed health, alert outcomes, and deduplication while the free instance remains alive.
 3. DexScreener enrichment plus free GoPlus and Honeypot.is contract screening.
-4. Transparent ignition/reawakening scoring with anti-late, identity-copy, serial-deployer, concentration, tax, honeypot, and dangerous-admin filters.
-5. Concise Telegram WATCH/BUY verdicts with an uncapped, evidence-led upside model from the alert price, a setup-specific one-line explanation, score, stage, age, liquidity, market cap, 5-minute flow, contract-check status, and invalidation. The target is calculated only after the independent quality and safety gate, so theoretical upside cannot make a poor token eligible.
-6. Every alert is re-sampled after 15 minutes, one hour, six hours, and 24 hours. Beefy records return, observed maximum favourable excursion (MFE), and observed maximum adverse excursion (MAE). Three successful empty market lookups classify a disappeared pool as a terminal loss rather than silently dropping it.
+4. Direct on-chain Transfer-log enrichment for distinct 5m/15m buyers and sellers, net-new-wallet velocity, pool-confirmed smart-wallet entries/exits, and deployer selling.
+5. Transparent inflection scoring with anti-late, local-base extension, bot/wash-flow, identity-copy, serial-deployer, concentration, tax, honeypot, and dangerous-admin filters. Large volume alone earns no conviction.
+6. Concise Telegram SCOUT/ACTION/A+ verdicts with an uncapped, evidence-led upside model, exact upgrade trigger for every SCOUT, measured evidence, first-detected versus alert market cap, sellability proxy and invalidation. The target is calculated only after the independent quality and safety gate.
+7. Every alert is re-sampled after 15 minutes, one hour, six hours, and 24 hours. Beefy records first-detected MC, actual alert MC, current MC and peak-after-alert MC separately alongside return, observed maximum favourable excursion (MFE), and observed maximum adverse excursion (MAE).
 
 The old scheduled daily alpha report and two-hour breakout alert are no longer scheduled, so there is one automated signal path. `/trending` and `/lookup` remain available as manual research tools.
 
@@ -54,7 +55,7 @@ Render sleeps a free web service after 15 minutes without inbound traffic. This 
 - Beefy Bot calls its own public `/health` endpoint every ten minutes.
 - `.github/workflows/keep-render-awake.yml` calls the same endpoint every ten minutes from GitHub Actions. The repository is public, so standard GitHub-hosted Actions are free. Scheduled workflows only begin after this workflow is on the default branch.
 
-The scanner defaults to a five-minute cadence, enriches at most 50 active candidates plus 50 alerted tokens awaiting outcomes, runs at most 12 new contract checks per cycle, and sends at most three alerts per cycle. Outcome candidates are ordered by their next due measurement so an older alert is not starved by newer ones. Seventy percent of each normal cycle is reserved for the newest candidates and thirty percent rotates through older candidates so reawakenings are not starved by new launches.
+The scanner defaults to a five-minute cadence, enriches at most 50 active candidates plus 50 alerted tokens awaiting outcomes, measures on-chain wallet flow for the eight highest-priority candidates, runs at most 12 new contract checks per cycle, and sends at most three alerts per cycle. Direct launches and fresh exact-CA/creator evidence receive the first flow-check slots. Outcome candidates are ordered by their next due measurement so an older alert is not starved by newer ones.
 
 Render can still restart a free service at any time and its local filesystem is ephemeral. On a fresh state database, Beefy Bot rebuilds candidates from the direct feeds and a 1,800-block RPC lookback and marks that backlog as a bootstrap cohort. Those contracts cannot produce recycled new-launch alerts; they become eligible only after a later measured reawakening. Genuinely new discoveries after startup alert normally. This is a recovery strategy rather than permanent storage, but it avoids introducing a paid database.
 
@@ -65,7 +66,7 @@ No wallet key is needed or wanted.
 Admin-only Telegram commands:
 
 - `/scannerstatus` — last cycle, 24-hour candidates/snapshots/alerts, and feed health.
-- `/signalstats` — 15m/1h/6h/24h sample counts, WATCH/BUY 24-hour win rate, median return, MFE/MAE, live thresholds, and wallet-cohort progress.
+- `/signalstats` — 15m/1h/6h/24h sample counts, SCOUT/ACTION/A+ results, MFE/MAE, fixed tiers, latest first/alert/current/peak MC audit, and wallet-cohort progress.
 - `/scannow` — run one cycle immediately.
 - `/alerttest` — send a clearly labelled test message to the configured signal destination.
 
@@ -75,7 +76,7 @@ Existing community commands and moderation remain in `server.py`.
 
 ### Curated smart wallets
 
-Set `SCANNER_SMART_WALLETS` to comma-separated, manually verified public addresses. The scanner counts ERC-20 transfers into and out of those wallets for active candidates on Base and Robinhood Chain.
+Set `SCANNER_SMART_WALLETS` to comma-separated, manually verified public addresses. Beefy counts each wallet once and only accepts an entry when tokens moved from the candidate's actual pool to that wallet; exits must move back to that pool. Unsolicited dust transfers cannot manufacture smart-wallet conviction.
 
 Beefy also records the transaction senders buying an alerted token from its pool. Repeat alerts on one token count once. By default a wallet must therefore succeed across at least three distinct completed token observations, with at least a 60% rate of +20% winners and at least +10% average 24-hour return. The resulting cohort is then monitored automatically. Wallet addresses are public data; no wallet credential is used.
 
@@ -97,15 +98,22 @@ For a launcher whose first-party factory is not published or cannot yet be verif
       "tokenAddress": "0x...",
       "socialVelocity": 2.4,
       "socialLinks": 3,
+      "exactCaMentions5m": 4,
+      "exactCaMentions15m": 6,
+      "credibleSocialMentions5m": 2,
+      "creatorActivityScore": 0.8,
+      "creatorReputation": 0.7,
+      "narrativeScore": 0.9,
       "smartWalletBuys": 2,
       "smartWalletSells": 0,
-      "smartWalletNetUsd": 1800
+      "smartWalletNetUsd": 1800,
+      "deployerSells15m": 0
     }
   ]
 }
 ```
 
-This lets an X/listening service or wallet analytics provider contribute signals without coupling Beefy Bot to one vendor.
+This lets an X/listening service contribute exact-CA and creator activity without coupling Beefy Bot to one vendor. There is no reliable unauthenticated X mention feed in the free deployment, so these fields score zero when the overlay is absent; Beefy never substitutes ticker-only chatter or guesses social velocity.
 
 ## Local verification
 

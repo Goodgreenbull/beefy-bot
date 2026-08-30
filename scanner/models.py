@@ -72,6 +72,20 @@ class MarketSnapshot:
     smart_wallet_buys: int = 0
     smart_wallet_sells: int = 0
     smart_wallet_net_usd: float = 0.0
+    unique_buyers_5m: int = 0
+    unique_buyers_15m: int = 0
+    unique_sellers_5m: int = 0
+    unique_sellers_15m: int = 0
+    net_new_wallets_5m: int = 0
+    net_new_wallets_15m: int = 0
+    holder_count: int | None = None
+    exact_ca_mentions_5m: int = 0
+    exact_ca_mentions_15m: int = 0
+    credible_social_mentions_5m: int = 0
+    creator_reputation: float = 0.0
+    narrative_score: float = 0.0
+    deployer_sells_15m: int = 0
+    flow_checked: bool = False
     source: str = ""
     raw: dict[str, Any] = field(default_factory=dict)
 
@@ -94,6 +108,7 @@ class SecurityProfile:
     checked: bool = False
     admin_checks_complete: bool = False
     simulation_checked: bool = False
+    sell_simulation_success: bool = False
     providers: tuple[str, ...] = ()
     is_honeypot: bool = False
     cannot_buy: bool = False
@@ -112,6 +127,7 @@ class SecurityProfile:
     lp_locked_percent: float | None = None
     lp_unlocked_percent: float | None = None
     holder_count: int | None = None
+    max_sell_quote_amount: float | None = None
     fake_token: bool = False
     creator_percent: float | None = None
     creator_honeypot_count: int = 0
@@ -153,6 +169,7 @@ class ScoreResult:
     target_multiple: float | None = None
     target_confidence: str = "LOW"
     target_basis: str = "live liquidity/flow structure; history building"
+    upgrade_trigger: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

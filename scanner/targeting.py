@@ -26,7 +26,7 @@ def structural_target(
     # below the capital already sitting in the pool.
     effective_market_cap = max(float(market_cap or 0.0), liquidity * 1.25)
     liquidity_power = 4.0 + quality * 18.0
-    if result.signal == "STRONG WATCH":
+    if result.signal == "A+":
         liquidity_power += 3.0
     if buy_ratio >= 0.70:
         liquidity_power += 2.0

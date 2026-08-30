@@ -182,6 +182,54 @@ class SQLiteStateTests(unittest.TestCase):
         ).fetchone()
         self.assertEqual(outcome["return_pct"], -100.0)
 
+    def test_market_cap_audit_separates_detection_alert_current_and_peak(self):
+        detected = MarketSnapshot(
+            chain="base", token_address=TOKEN, price_usd=0.5, market_cap_usd=50_000
+        )
+        self.state.add_snapshot(self.candidate.key, detected)
+        result = ScoreResult(75, "IGNITION", "ACTION", True, 0, {}, [], [], "test")
+        alert_id = self.state.record_alert(
+            self.candidate.key,
+            result,
+            MarketSnapshot(
+                chain="base", token_address=TOKEN, price_usd=1.0, market_cap_usd=80_000
+            ),
+        )
+        sent_at = datetime.now(timezone.utc) - timedelta(minutes=20)
+        self.state.connection.execute(
+            "UPDATE alerts SET sent_at = ? WHERE id = ?", (sent_at.isoformat(), alert_id)
+        )
+        self.state.connection.commit()
+        self.state.update_alert_outcomes(
+            self.candidate.key,
+            MarketSnapshot(
+                chain="base",
+                token_address=TOKEN,
+                captured_at=sent_at + timedelta(minutes=15),
+                price_usd=1.25,
+                market_cap_usd=100_000,
+            ),
+        )
+        self.state.update_alert_outcomes(
+            self.candidate.key,
+            MarketSnapshot(
+                chain="base",
+                token_address=TOKEN,
+                captured_at=sent_at + timedelta(minutes=16),
+                price_usd=0.875,
+                market_cap_usd=70_000,
+            ),
+        )
+        row = self.state.connection.execute(
+            """
+            SELECT first_detected_market_cap_usd, alert_market_cap_usd,
+                   current_market_cap_usd, peak_after_alert_market_cap_usd
+            FROM alerts WHERE id = ?
+            """,
+            (alert_id,),
+        ).fetchone()
+        self.assertEqual(tuple(row), (50_000, 80_000, 70_000, 100_000))
+
     def test_active_candidates_balance_fresh_and_rotating_rechecks(self):
         self.state.connection.execute("DELETE FROM candidates")
         self.state.connection.commit()
@@ -256,8 +304,9 @@ class SQLiteStateTests(unittest.TestCase):
         calibrated = self.state.calibrated_thresholds(config)
         self.assertTrue(calibrated["calibrated"])
         self.assertEqual(calibrated["samples"], 40)
-        self.assertGreater(calibrated["watch"], config.min_alert_score)
-        self.assertGreaterEqual(calibrated["buy"], 84)
+        self.assertEqual(calibrated["scout"], 60)
+        self.assertEqual(calibrated["watch"], 70)
+        self.assertEqual(calibrated["buy"], 80)
 
     def test_target_estimate_uses_distinct_comparable_24h_outcomes(self):
         sent_at = datetime.now(timezone.utc) - timedelta(hours=25)

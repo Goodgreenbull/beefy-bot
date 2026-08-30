@@ -6,15 +6,15 @@
 launch APIs / profiles ─┐
 verified factory logs ──┼─> candidate state ─> market + contract enrichment
 V2/V3 pool events ──────┘                         │
-                                                  ├─> ignition / reawakening score
-social/project identity ──────────────────────────┤
+token Transfer logs ─────────────────────────────┼─> unique buyer/holder inflection
+exact-CA social / creator overlay ───────────────┤
 manual + learned smart wallets ───────────────────┤
                                                   ├─> quality + anti-late gates
                                                   └─> dedupe ─> Telegram alert
                                                                        │
                                               15m / 1h / 6h / 24h outcomes
                                                                        │
-                                                MFE/MAE + threshold calibration
+                                                MFE/MAE + outcome/model calibration
 ```
 
 Every external feed is isolated. One failing provider is recorded in `feed_health` but does not stop the remaining feeds or the next cycle.
@@ -40,6 +40,7 @@ SQLite stores only public market data:
 
 - normalized candidates and first/launch timestamps;
 - rolling snapshots used for acceleration and fading detection;
+- first-detected market cap and on-chain 5m/15m unique-wallet observations;
 - per-feed block/order cursors;
 - feed success/error timestamps;
 - prior alerts and their scores.
@@ -51,29 +52,29 @@ The same token can arrive from several feeds and is merged by `chain:token_addre
 
 ## Scoring
 
-The 0–100 score is inspectable and uses:
+The 0–100 score is inspectable and gives the largest weights to change happening now:
 
 - freshness or reawakening persistence;
-- 5-minute volume/liquidity churn;
-- transaction velocity and buy pressure;
-- volume acceleration versus stored snapshots;
-- controlled price confirmation;
-- social metadata/velocity;
-- curated smart-wallet flow.
-- direct-launch provenance and project identity;
+- 5m/15m distinct buyer acceleration and net-new-wallet growth from pool-linked Transfer logs;
+- buyer-count acceleration and improving buy/sell balance versus stored snapshots;
+- dips being absorbed rather than volume merely being large;
+- exact-CA social acceleration and fresh creator activity when supplied by the optional overlay;
+- two or more distinct pool-confirmed curated smart-wallet entries for A+;
+- direct-launch provenance, creator outcome history and explicit product/narrative evidence;
+- liquidity depth and a free sell-simulation-based £20 sellability proxy;
 - contract safety, creator history, and holder concentration.
 
-The anti-late gate rejects or penalizes candidates that are already extended, above the configured microcap ceiling, dominated by sells, drawing down from a recent peak, or fading in both price and volume. The quality gate also requires a positive USD price, conclusive admin checks, a successful Base sell simulation when the token did not come from a verified launch factory, project/social or proven-wallet evidence, minimum liquidity and transactions, and no hard honeypot/buy-sell restriction. Duplicate identities, serial deployers, excessive owner/creator concentration, prior creator honeypots, high buy/sell taxes, unlocked liquidity on untrusted launches, modifiable taxes, mint/pause/blacklist controls, and unverified source code reduce or block conviction.
+The anti-late gate penalizes anything already above 2x from its measured local base, vertical blow-offs, extended hourly moves, sell dominance, post-peak distribution and fading flow. High churn without buyer/holder growth, many transactions from very few unique wallets, unidentifiable or poor-history deployers, deployer selling, fake associations, duplicate identities and serial launching all reduce or block conviction. The safety gate retains the honeypot, sell restriction, dangerous concentration, tax, unlocked-liquidity and admin-control checks.
 
-Outputs are `MONITOR`, `EARLY WATCH`, `STRONG WATCH`, or `AVOID LATE`. None of these outputs places an order.
+Outputs are `MONITOR`, `SCOUT` (60–69 with exactly one stated upgrade trigger), `ACTION` (70–79), `A+` (80+ with at least five independent confirmations including two proven wallets and sellability), or `AVOID LATE`. None places an order. A score alone is insufficient: every alert must independently pass safety, liquidity, inflection and evidence gates.
 
 Telegram converts eligible outputs into one compact verdict line. Only after a token passes the independent quality, safety, and anti-late gates, its uncapped upside model combines valuation, liquidity depth, buyer share, volume, smart-wallet support, social evidence, stage, and short-term extension. Once five comparable completed calls exist, the structural estimate is blended with their 70th-percentile maximum favourable movement, preferring accurate 24-hour outcomes and falling back to six-hour outcomes. This lets genuinely supported 10x+ cases appear without allowing a large theoretical number to rescue a weak or unsafe token. The figure is measured from the alert price and is not a guaranteed return.
 
 ## Forward outcomes and calibration
 
-Every sent alert stores its entry price, market cap, and liquidity. Alerted candidates stay in the active set until the first available observation after 15, 60, 360, and 1,440 minutes. Each horizon stores the best and worst sampled return available at that point (MFE/MAE), rather than reusing the eventual 24-hour extrema. Materially late samples are retained but excluded from calibration. After three successful empty market lookups, a disappeared pool is recorded as a terminal -100% outcome; provider/network failures do not count as confirmations. At a five-minute cadence these are observed excursions, not tick-perfect extrema.
+Every candidate stores the first market cap Beefy could actually observe. Every alert then stores the distinct actual alert MC, latest/current MC and peak MC observed after that alert. These are not reconstructed from an earlier discovery timestamp. Alerted candidates stay active for observations after 15, 60, 360 and 1,440 minutes, with MFE/MAE measured from the actual alert price.
 
-WATCH and BUY begin at 74 and 84. Automatic calibration waits for at least 30 completed 24-hour samples, then searches only for thresholds supported by minimum sample sizes, win rate, median return, MFE, and MAE. It will not lower the conservative starting thresholds. This deliberately avoids retuning from the first bad $6k alert or one lucky winner.
+The requested tiers remain fixed at SCOUT 60, ACTION 70 and A+ 80 so a label always means the same score range. Completed outcomes calibrate the upside model and support later evidence-led rubric reviews without silently moving those tier boundaries. This avoids retuning from one bad microcap or one lucky winner.
 
 Early buyer addresses are resolved from transaction senders rather than router recipients. A wallet is promoted into the learned cohort only after results across distinct token contracts meet the configured observation, win-rate, and average-return floors.
 
@@ -85,4 +86,4 @@ The free deployment uses a five-minute scan and two ten-minute health checks (on
 
 Free Render storage remains ephemeral. After a fresh-state restart the scanner restores recent candidates from launch feeds and a 1,800-block RPC lookback and permanently marks that initial backlog as bootstrap data. It cannot emit a recycled ignition alert, although a later evidence-backed reawakening remains eligible. New post-start discoveries resume normally after warm-up. This removes routine redeploy repeats without introducing an external paid datastore.
 
-Social quality is limited to market/profile metadata unless `SCANNER_SIGNAL_OVERLAY_URL` is connected to an X/social listener. The automatic wallet cohort requires three completed observations by default, so it intentionally starts empty. These are explicit inputs, not hidden claims of profitability.
+Social quality is limited to profile identity unless `SCANNER_SIGNAL_OVERLAY_URL` supplies exact-CA mention counts, credible mentions and creator activity. Ticker-only mentions never qualify as exact-CA evidence. The automatic wallet cohort requires three completed observations by default, so it intentionally starts empty. These are explicit inputs, not hidden claims of profitability.

@@ -24,7 +24,7 @@ class TargetingTests(unittest.TestCase):
             smart_wallet_buys=2,
         )
         result = ScoreResult(
-            95, "IGNITION", "STRONG WATCH", True, 0, {}, [], [], "flow fails"
+            95, "IGNITION", "A+", True, 0, {}, [], [], "flow fails"
         )
 
         self.assertGreaterEqual(structural_target(candidate, snapshot, result), 10.0)

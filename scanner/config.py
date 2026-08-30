@@ -64,8 +64,9 @@ class ScannerConfig:
     interval_seconds: int = 300
     state_db: str = "scanner_state.sqlite3"
     alert_chat_id: str | None = None
-    min_alert_score: float = 74.0
-    strong_alert_score: float = 84.0
+    scout_alert_score: float = 60.0
+    min_alert_score: float = 70.0
+    strong_alert_score: float = 80.0
     alert_cooldown_minutes: int = 45
     alert_score_upgrade: float = 10.0
     token_realert_hours: int = 24
@@ -88,9 +89,13 @@ class ScannerConfig:
     rpc_max_block_span: int = 1_800
     http_timeout_seconds: int = 12
     dex_concurrency: int = 6
-    security_check_min_score: float = 60.0
-    security_cache_minutes: int = 360
+    security_check_min_score: float = 55.0
+    security_cache_minutes: int = 30
     max_security_checks_per_cycle: int = 12
+    max_flow_checks_per_cycle: int = 8
+    flow_5m_blocks: int = 150
+    flow_15m_blocks: int = 450
+    max_flow_transactions: int = 60
     auto_calibrate: bool = True
     calibration_min_samples: int = 30
     smart_wallets: tuple[str, ...] = ()
@@ -140,8 +145,9 @@ class ScannerConfig:
                 or os.getenv("ADMIN_CHAT_ID")
                 or os.getenv("TELEGRAM_GROUP_ID")
             ),
-            min_alert_score=_float("SCANNER_MIN_ALERT_SCORE", 74.0),
-            strong_alert_score=_float("SCANNER_STRONG_ALERT_SCORE", 84.0),
+            scout_alert_score=_float("SCANNER_SCOUT_ALERT_SCORE", 60.0),
+            min_alert_score=_float("SCANNER_MIN_ALERT_SCORE", 70.0),
+            strong_alert_score=_float("SCANNER_STRONG_ALERT_SCORE", 80.0),
             alert_cooldown_minutes=_int("SCANNER_ALERT_COOLDOWN_MINUTES", 45),
             alert_score_upgrade=_float("SCANNER_ALERT_SCORE_UPGRADE", 10.0),
             token_realert_hours=max(1, _int("SCANNER_TOKEN_REALERT_HOURS", 24)),
@@ -166,9 +172,13 @@ class ScannerConfig:
             rpc_max_block_span=_int("SCANNER_RPC_MAX_BLOCK_SPAN", 1_800),
             http_timeout_seconds=_int("SCANNER_HTTP_TIMEOUT_SECONDS", 12),
             dex_concurrency=_int("SCANNER_DEX_CONCURRENCY", 6),
-            security_check_min_score=_float("SCANNER_SECURITY_CHECK_MIN_SCORE", 60.0),
-            security_cache_minutes=max(15, _int("SCANNER_SECURITY_CACHE_MINUTES", 360)),
+            security_check_min_score=_float("SCANNER_SECURITY_CHECK_MIN_SCORE", 55.0),
+            security_cache_minutes=max(15, _int("SCANNER_SECURITY_CACHE_MINUTES", 30)),
             max_security_checks_per_cycle=max(1, _int("SCANNER_MAX_SECURITY_CHECKS", 12)),
+            max_flow_checks_per_cycle=max(1, _int("SCANNER_MAX_FLOW_CHECKS", 8)),
+            flow_5m_blocks=max(20, _int("SCANNER_FLOW_5M_BLOCKS", 150)),
+            flow_15m_blocks=max(60, _int("SCANNER_FLOW_15M_BLOCKS", 450)),
+            max_flow_transactions=max(10, _int("SCANNER_MAX_FLOW_TRANSACTIONS", 60)),
             auto_calibrate=_bool("SCANNER_AUTO_CALIBRATE", True),
             calibration_min_samples=max(20, _int("SCANNER_CALIBRATION_MIN_SAMPLES", 30)),
             smart_wallets=_csv("SCANNER_SMART_WALLETS"),

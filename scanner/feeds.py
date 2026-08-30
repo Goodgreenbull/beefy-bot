@@ -705,6 +705,9 @@ class DexScreenerEnricher:
                 "url": pair.get("url"),
                 "name": (pair.get("baseToken") or {}).get("name"),
                 "symbol": (pair.get("baseToken") or {}).get("symbol"),
+                "price_native": pair.get("priceNative"),
+                "quote_address": (pair.get("quoteToken") or {}).get("address"),
+                "quote_symbol": (pair.get("quoteToken") or {}).get("symbol"),
                 "pair_created_at": pair.get("pairCreatedAt"),
             },
         )
@@ -756,6 +759,151 @@ def snapshot_from_fallback(candidate: Candidate) -> MarketSnapshot | None:
             },
         )
     return None
+
+
+class OnchainFlowEnricher:
+    """Measure recent unique wallet flow directly from token Transfer logs."""
+
+    def __init__(self, config: ScannerConfig) -> None:
+        self.config = config
+        self.rpc_urls = {"base": config.base_rpc_url, "robinhood": config.robinhood_rpc_url}
+        self._semaphore = asyncio.Semaphore(max(1, min(config.dex_concurrency, 4)))
+
+    async def _rpc(
+        self,
+        session: aiohttp.ClientSession,
+        url: str,
+        method: str,
+        params: list[Any],
+    ) -> Any:
+        async with session.post(
+            url,
+            json={"jsonrpc": "2.0", "id": 1, "method": method, "params": params},
+        ) as response:
+            if response.status >= 400:
+                raise RuntimeError(f"on-chain flow RPC HTTP {response.status}")
+            payload = await response.json(content_type=None)
+        if payload.get("error"):
+            raise RuntimeError(payload["error"].get("message", "on-chain flow RPC error"))
+        return payload.get("result")
+
+    async def _transaction_senders(
+        self,
+        session: aiohttp.ClientSession,
+        url: str,
+        hashes: list[str],
+    ) -> dict[str, str]:
+        selected = list(dict.fromkeys(hashes))[-self.config.max_flow_transactions :]
+        if not selected:
+            return {}
+        requests = [
+            {
+                "jsonrpc": "2.0",
+                "id": index,
+                "method": "eth_getTransactionByHash",
+                "params": [tx_hash],
+            }
+            for index, tx_hash in enumerate(selected)
+        ]
+        async with session.post(url, json=requests) as response:
+            if response.status >= 400:
+                raise RuntimeError(f"on-chain flow transaction RPC HTTP {response.status}")
+            payload = await response.json(content_type=None)
+        rows = payload if isinstance(payload, list) else []
+        return {
+            selected[int(row["id"])]: normalise_address((row.get("result") or {}).get("from"))
+            for row in rows
+            if isinstance(row, dict)
+            and str(row.get("id", "")).isdigit()
+            and int(row["id"]) < len(selected)
+            and len(normalise_address((row.get("result") or {}).get("from"))) == 42
+        }
+
+    async def enrich(
+        self,
+        session: aiohttp.ClientSession,
+        candidate: Candidate,
+        snapshot: MarketSnapshot,
+    ) -> dict[str, Any]:
+        pair = normalise_address(snapshot.pair_address or candidate.pair_address)
+        url = self.rpc_urls.get(candidate.chain)
+        if not url or len(pair) != 42:
+            return {}
+        async with self._semaphore:
+            latest = int(await self._rpc(session, url, "eth_blockNumber", []), 16)
+            start = max(0, latest - self.config.flow_15m_blocks + 1)
+            pair_topic = "0x" + pair.removeprefix("0x").rjust(64, "0")
+            common = {
+                "fromBlock": hex(start),
+                "toBlock": hex(latest),
+                "address": candidate.token_address,
+            }
+            buys, sells = await asyncio.gather(
+                self._rpc(
+                    session,
+                    url,
+                    "eth_getLogs",
+                    [{**common, "topics": [TRANSFER_TOPIC, pair_topic]}],
+                ),
+                self._rpc(
+                    session,
+                    url,
+                    "eth_getLogs",
+                    [{**common, "topics": [TRANSFER_TOPIC, None, pair_topic]}],
+                ),
+            )
+            buy_logs = [row for row in buys or [] if isinstance(row, dict)]
+            sell_logs = [row for row in sells or [] if isinstance(row, dict)]
+            hashes = [
+                str(row.get("transactionHash"))
+                for row in buy_logs + sell_logs
+                if row.get("transactionHash")
+            ]
+            senders = await self._transaction_senders(session, url, hashes)
+
+        five_minute_start = latest - self.config.flow_5m_blocks + 1
+
+        def wallets(rows: list[dict], minimum_block: int, fallback_topic: int) -> set[str]:
+            resolved: set[str] = set()
+            for row in rows:
+                if int(str(row.get("blockNumber") or "0x0"), 16) < minimum_block:
+                    continue
+                tx_hash = str(row.get("transactionHash") or "")
+                sender = senders.get(tx_hash)
+                topics = row.get("topics") or []
+                fallback = _address_from_topic(
+                    topics[fallback_topic] if len(topics) > fallback_topic else None
+                )
+                wallet = sender or fallback
+                if len(wallet) == 42 and wallet not in {pair, candidate.token_address}:
+                    resolved.add(wallet)
+            return resolved
+
+        buyers_5m = wallets(buy_logs, five_minute_start, 2)
+        buyers_15m = wallets(buy_logs, start, 2)
+        sellers_5m = wallets(sell_logs, five_minute_start, 1)
+        sellers_15m = wallets(sell_logs, start, 1)
+        deployer = normalise_address(candidate.deployer)
+        deployer_sells = sum(
+            1
+            for row in sell_logs
+            if len(deployer) == 42
+            and _address_from_topic(
+                (row.get("topics") or [None, None])[1]
+                if len(row.get("topics") or []) > 1
+                else None
+            ) == deployer
+        )
+        return {
+            "unique_buyers_5m": len(buyers_5m),
+            "unique_buyers_15m": len(buyers_15m),
+            "unique_sellers_5m": len(sellers_5m),
+            "unique_sellers_15m": len(sellers_15m),
+            "net_new_wallets_5m": len(buyers_5m - sellers_5m),
+            "net_new_wallets_15m": len(buyers_15m - sellers_15m),
+            "deployer_sells_15m": deployer_sells,
+            "flow_checked": True,
+        }
 
 
 class TokenRiskEnricher:
@@ -878,6 +1026,7 @@ class TokenRiskEnricher:
             checked=bool(providers),
             admin_checks_complete=goplus_usable,
             simulation_checked=honeypot_usable,
+            sell_simulation_success=bool(honeypot.get("simulationSuccess")),
             providers=tuple(providers),
             is_honeypot=_truthy(goplus.get("is_honeypot")) or bool(hp_result.get("isHoneypot")),
             cannot_buy=_truthy(goplus.get("cannot_buy")),
@@ -897,6 +1046,9 @@ class TokenRiskEnricher:
             lp_locked_percent=round(lp_locked, 2) if lp_holders else None,
             lp_unlocked_percent=round(lp_unlocked, 2) if lp_holders else None,
             holder_count=_integer(goplus.get("holder_count"), 0) or _integer((honeypot.get("token") or {}).get("totalHolders"), 0) or None,
+            max_sell_quote_amount=(
+                _number((simulation.get("maxSell") or {}).get("withToken"), 0.0) or None
+            ),
             fake_token=_truthy(goplus.get("fake_token")),
             creator_percent=_percent(goplus.get("creator_percent")),
             creator_honeypot_count=_integer(goplus.get("honeypot_with_same_creator"), 0),
@@ -968,12 +1120,14 @@ class SmartWalletMonitor:
         if not self.configured_wallets and not any(curated_by_chain.values()):
             return {}
         grouped: dict[str, list[str]] = defaultdict(list)
+        pair_by_key: dict[str, str] = {}
         for candidate in candidates:
-            if candidate.chain in self.rpc_urls:
+            pair = normalise_address(candidate.pair_address)
+            if candidate.chain in self.rpc_urls and len(pair) == 42:
                 grouped[candidate.chain].append(candidate.token_address)
-        signals: dict[str, dict[str, float]] = defaultdict(
-            lambda: {"smart_wallet_buys": 0.0, "smart_wallet_sells": 0.0, "smart_wallet_net_usd": 0.0}
-        )
+                pair_by_key[candidate.key] = pair
+        buys_by_key: dict[str, set[str]] = defaultdict(set)
+        sells_by_key: dict[str, set[str]] = defaultdict(set)
         for chain, addresses in grouped.items():
             wallets = self.configured_wallets | curated_by_chain.get(chain, set())
             wallet_topics = [
@@ -998,12 +1152,28 @@ class SmartWalletMonitor:
                 )
                 for log in incoming or []:
                     key = f"{chain}:{normalise_address(log.get('address'))}"
-                    signals[key]["smart_wallet_buys"] += 1
+                    topics = log.get("topics") or []
+                    source = _address_from_topic(topics[1] if len(topics) > 1 else None)
+                    recipient = _address_from_topic(topics[2] if len(topics) > 2 else None)
+                    if source == pair_by_key.get(key) and recipient in wallets:
+                        buys_by_key[key].add(recipient)
                 for log in outgoing or []:
                     key = f"{chain}:{normalise_address(log.get('address'))}"
-                    signals[key]["smart_wallet_sells"] += 1
+                    topics = log.get("topics") or []
+                    sender = _address_from_topic(topics[1] if len(topics) > 1 else None)
+                    recipient = _address_from_topic(topics[2] if len(topics) > 2 else None)
+                    if recipient == pair_by_key.get(key) and sender in wallets:
+                        sells_by_key[key].add(sender)
             state.set_cursor(cursor_key, str(latest))
-        return dict(signals)
+        keys = set(buys_by_key) | set(sells_by_key)
+        return {
+            key: {
+                "smart_wallet_buys": float(len(buys_by_key[key])),
+                "smart_wallet_sells": float(len(sells_by_key[key])),
+                "smart_wallet_net_usd": 0.0,
+            }
+            for key in keys
+        }
 
     async def observe_early_buyers(
         self,

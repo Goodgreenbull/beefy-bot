@@ -12,6 +12,7 @@ CLEAN_SECURITY = {
     "checked": True,
     "admin_checks_complete": True,
     "simulation_checked": True,
+    "sell_simulation_success": True,
     "is_honeypot": False,
     "cannot_buy": False,
     "cannot_sell": False,
@@ -36,6 +37,18 @@ def snapshot(**overrides):
         "price_change_1h": 40,
         "social_links": 3,
         "smart_wallet_buys": 2,
+        "unique_buyers_5m": 10,
+        "unique_buyers_15m": 16,
+        "unique_sellers_5m": 2,
+        "unique_sellers_15m": 4,
+        "net_new_wallets_5m": 8,
+        "net_new_wallets_15m": 12,
+        "exact_ca_mentions_5m": 3,
+        "exact_ca_mentions_15m": 4,
+        "credible_social_mentions_5m": 1,
+        "creator_reputation": 0.7,
+        "narrative_score": 0.7,
+        "flow_checked": True,
         "raw": {"security": CLEAN_SECURITY.copy()},
     }
     values.update(overrides)
@@ -58,7 +71,7 @@ class SignalScorerTests(unittest.TestCase):
         result = self.scorer.score(candidate, snapshot(), [], now=NOW)
         self.assertEqual(result.stage, "IGNITION")
         self.assertTrue(result.eligible)
-        self.assertIn(result.signal, {"EARLY WATCH", "STRONG WATCH"})
+        self.assertIn(result.signal, {"ACTION", "A+"})
 
     def test_extended_move_is_rejected_by_anti_late_gate(self):
         candidate = Candidate(
@@ -115,7 +128,7 @@ class SignalScorerTests(unittest.TestCase):
             now=NOW,
         )
         self.assertTrue(result.eligible)
-        self.assertEqual(result.signal, "EARLY WATCH")
+        self.assertNotEqual(result.signal, "A+")
 
     def test_honeypot_never_alerts_even_with_strong_flow(self):
         candidate = Candidate(
@@ -150,7 +163,7 @@ class SignalScorerTests(unittest.TestCase):
             candidate, snapshot(raw={"security": unsafe}), [], now=NOW
         )
         self.assertFalse(result.eligible)
-        self.assertIn("buy tax 25%", result.blockers)
+        self.assertIn("dangerous tax 25%/0%", result.blockers)
         self.assertIn("80% of LP appears unlocked", result.blockers)
 
     def test_copycat_penalty_can_suppress_otherwise_eligible_alert(self):
@@ -176,9 +189,55 @@ class SignalScorerTests(unittest.TestCase):
         )
         result = self.scorer.score(
             candidate,
-            snapshot(social_links=0, smart_wallet_buys=0),
+            snapshot(
+                social_links=0,
+                smart_wallet_buys=0,
+                exact_ca_mentions_5m=0,
+                exact_ca_mentions_15m=0,
+                credible_social_mentions_5m=0,
+                creator_reputation=0,
+                narrative_score=0,
+            ),
             [],
             now=NOW,
         )
         self.assertFalse(result.eligible)
         self.assertIn("no project/social", " ".join(result.blockers))
+
+    def test_large_volume_without_buyer_or_holder_inflection_does_not_alert(self):
+        candidate = Candidate(chain="base", token_address=TOKEN, source="bankr", launch_at=NOW)
+        result = self.scorer.score(
+            candidate,
+            snapshot(
+                volume_5m_usd=100_000,
+                unique_buyers_5m=0,
+                unique_buyers_15m=0,
+                net_new_wallets_5m=0,
+                flow_checked=False,
+            ),
+            [],
+            now=NOW,
+        )
+        self.assertFalse(result.eligible)
+        self.assertIn("inflection not confirmed", " ".join(result.blockers))
+
+    def test_accelerating_buyers_can_upgrade_a_candidate_to_action(self):
+        candidate = Candidate(chain="base", token_address=TOKEN, source="bankr", launch_at=NOW)
+        history = [snapshot(buys_5m=8, sells_5m=5, unique_buyers_5m=3) for _ in range(3)]
+        result = self.scorer.score(candidate, snapshot(), history, now=NOW)
+        self.assertTrue(result.eligible)
+        self.assertIn(result.signal, {"ACTION", "A+"})
+
+    def test_local_two_x_and_deployer_dump_are_penalised(self):
+        candidate = Candidate(chain="base", token_address=TOKEN, source="bankr", launch_at=NOW)
+        history = [snapshot(price_usd=0.0004)]
+        extended = self.scorer.score(candidate, snapshot(price_usd=0.001), history, now=NOW)
+        dumped = self.scorer.score(candidate, snapshot(deployer_sells_15m=1), [], now=NOW)
+        self.assertIn("from its measured local base", " ".join(extended.blockers))
+        self.assertFalse(dumped.eligible)
+        self.assertIn("deployer sold", " ".join(dumped.blockers))
+
+    def test_a_plus_requires_two_proven_wallets(self):
+        candidate = Candidate(chain="base", token_address=TOKEN, source="bankr", launch_at=NOW)
+        result = self.scorer.score(candidate, snapshot(smart_wallet_buys=1), [], now=NOW)
+        self.assertNotEqual(result.signal, "A+")

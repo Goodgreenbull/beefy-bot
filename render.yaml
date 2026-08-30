@@ -14,9 +14,11 @@ services:
       - key: SCANNER_ACTIVE_LIMIT
         value: "50"
       - key: SCANNER_MIN_ALERT_SCORE
-        value: "74"
+        value: "70"
       - key: SCANNER_STRONG_ALERT_SCORE
-        value: "84"
+        value: "80"
+      - key: SCANNER_SCOUT_ALERT_SCORE
+        value: "60"
       - key: SCANNER_MAX_ALERTS_PER_CYCLE
         value: "3"
       - key: SCANNER_TOKEN_REALERT_HOURS
@@ -29,3 +31,9 @@ services:
         value: "3"
       - key: SCANNER_AUTO_CURATE_SMART_WALLETS
         value: "true"
+      - key: SCANNER_SECURITY_CACHE_MINUTES
+        value: "30"
+      - key: SCANNER_SECURITY_CHECK_MIN_SCORE
+        value: "55"
+      - key: SCANNER_MAX_FLOW_CHECKS
+        value: "8"
