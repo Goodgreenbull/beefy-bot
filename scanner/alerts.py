@@ -4,6 +4,7 @@ import html
 from datetime import datetime, timezone
 
 from .models import Candidate, MarketSnapshot, ScoreResult
+from .targeting import structural_target
 
 
 def _money(value: float | None) -> str:
@@ -16,30 +17,8 @@ def _money(value: float | None) -> str:
     return f"${value:,.0f}"
 
 
-def _upside_scenario(snapshot: MarketSnapshot, result: ScoreResult) -> float:
-    """Bounded, explainable scenario multiple from the alert price."""
-    trades = snapshot.buys_5m + snapshot.sells_5m
-    buy_ratio = snapshot.buys_5m / trades if trades else 0.0
-    churn = snapshot.volume_5m_usd / snapshot.liquidity_usd if snapshot.liquidity_usd else 0.0
-    multiple = 1.35 + min(0.5, max(0.0, result.score - 74.0) * 0.025)
-    if result.signal == "STRONG WATCH":
-        multiple += 0.35
-    if result.stage == "REAWAKENING":
-        multiple += 0.10
-    if buy_ratio >= 0.70:
-        multiple += 0.15
-    if 0.20 <= churn <= 1.25:
-        multiple += 0.15
-    if snapshot.smart_wallet_buys > snapshot.smart_wallet_sells:
-        multiple += 0.10
-    if snapshot.social_links >= 2:
-        multiple += 0.10
-    if snapshot.liquidity_usd < 8_000:
-        multiple -= 0.10
-    if snapshot.price_change_5m >= 35:
-        multiple -= 0.15
-    ceiling = 2.8 if result.signal == "STRONG WATCH" else 2.0
-    return round(max(1.3, min(ceiling, multiple)), 1)
+def _multiple(value: float) -> str:
+    return f"{value:.1f}".rstrip("0").rstrip(".") + "x"
 
 
 def _setup_summary(candidate: Candidate, snapshot: MarketSnapshot, result: ScoreResult) -> str:
@@ -94,19 +73,21 @@ def format_alert(candidate: Candidate, snapshot: MarketSnapshot, result: ScoreRe
     name = html.escape(candidate.name or symbol)
     chain = html.escape(candidate.chain.upper())
     source = html.escape(candidate.source.split(",")[0])
-    target_multiple = _upside_scenario(snapshot, result)
+    target_multiple = result.target_multiple or structural_target(candidate, snapshot, result)
     target_market_cap = market_cap * target_multiple if market_cap else None
     target_text = f" (~{_money(target_market_cap)} MC)" if target_market_cap else ""
+    target_label = _multiple(target_multiple)
+    confidence = html.escape(result.target_confidence or "LOW")
     summary = html.escape(_setup_summary(candidate, snapshot, result))
     if result.signal == "STRONG WATCH":
         verdict = (
-            f"🐂 <b>Beefy Call: BUY · {target_multiple:.1f}x upside scenario"
-            f"{target_text}</b> — {summary}."
+            f"🐂 <b>Beefy Call: BUY · {target_label} model upside"
+            f"{target_text}</b> [{confidence}] — {summary}."
         )
     else:
         verdict = (
-            f"👀 <b>Beefy Verdict: WATCH · {target_multiple:.1f}x upside scenario"
-            f"{target_text}</b> — {summary}."
+            f"👀 <b>Beefy Verdict: WATCH · {target_label} model upside"
+            f"{target_text}</b> [{confidence}] — {summary}."
         )
     address = html.escape(candidate.token_address)
     chart = candidate.chart_url or snapshot.raw.get("url")
@@ -136,6 +117,10 @@ def format_alert(candidate: Candidate, snapshot: MarketSnapshot, result: ScoreRe
     if chart:
         lines.append(f'<a href="{html.escape(str(chart), quote=True)}">Open chart</a>')
     lines.extend(
-        ["", "Scenario is from alert price, not a promise · high-risk · no auto-trading · DYOR"]
+        [
+            "",
+            f"Model: {html.escape(result.target_basis)}",
+            "From alert price · not a promise · high-risk · no auto-trading · DYOR",
+        ]
     )
     return "\n".join(lines)

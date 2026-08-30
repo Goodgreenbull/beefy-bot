@@ -150,6 +150,9 @@ class ScoreResult:
     drivers: list[str]
     blockers: list[str]
     invalidation: str
+    target_multiple: float | None = None
+    target_confidence: str = "LOW"
+    target_basis: str = "live liquidity/flow structure; history building"
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

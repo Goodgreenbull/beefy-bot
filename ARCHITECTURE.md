@@ -67,7 +67,7 @@ The anti-late gate rejects or penalizes candidates that are already extended, ab
 
 Outputs are `MONITOR`, `EARLY WATCH`, `STRONG WATCH`, or `AVOID LATE`. None of these outputs places an order.
 
-Telegram converts eligible outputs into one compact verdict line. Its bounded upside scenario combines score, buyer share, volume/liquidity churn, smart-wallet support, social evidence, stage, liquidity depth, and short-term extension. It is measured from the alert price, capped at 2.0x for WATCH and 2.8x for BUY, and is explicitly presented as a scenario rather than a guaranteed return.
+Telegram converts eligible outputs into one compact verdict line. Only after a token passes the independent quality, safety, and anti-late gates, its uncapped upside model combines valuation, liquidity depth, buyer share, volume, smart-wallet support, social evidence, stage, and short-term extension. Once five comparable completed calls exist, the structural estimate is blended with their 70th-percentile maximum favourable movement, preferring accurate 24-hour outcomes and falling back to six-hour outcomes. This lets genuinely supported 10x+ cases appear without allowing a large theoretical number to rescue a weak or unsafe token. The figure is measured from the alert price and is not a guaranteed return.
 
 ## Forward outcomes and calibration
 

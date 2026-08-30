@@ -258,3 +258,57 @@ class SQLiteStateTests(unittest.TestCase):
         self.assertEqual(calibrated["samples"], 40)
         self.assertGreater(calibrated["watch"], config.min_alert_score)
         self.assertGreaterEqual(calibrated["buy"], 84)
+
+    def test_target_estimate_uses_distinct_comparable_24h_outcomes(self):
+        sent_at = datetime.now(timezone.utc) - timedelta(hours=25)
+        result = ScoreResult(
+            88, "IGNITION", "STRONG WATCH", True, 0, {}, [], [], "test"
+        )
+        for index in range(5):
+            token = f"0x{index + 600:040x}"
+            candidate = Candidate(chain="base", token_address=token, source="bankr")
+            self.state.upsert_candidate(candidate)
+            alert_id = self.state.record_alert(
+                candidate.key,
+                result,
+                MarketSnapshot(chain="base", token_address=token, price_usd=1.0),
+            )
+            self.state.connection.execute(
+                "UPDATE alerts SET sent_at = ? WHERE id = ?",
+                (sent_at.isoformat(), alert_id),
+            )
+            self.state.connection.execute(
+                """
+                INSERT INTO alert_outcomes(
+                    alert_id, horizon_minutes, due_at, captured_at,
+                    price_usd, market_cap_usd, liquidity_usd, return_pct,
+                    capture_lag_minutes, mfe_pct, mae_pct
+                ) VALUES (?, 1440, ?, ?, 10, 1000000, 20000, 900, 0, ?, -20)
+                """,
+                (
+                    alert_id,
+                    (sent_at + timedelta(hours=24)).isoformat(),
+                    datetime.now(timezone.utc).isoformat(),
+                    900.0 + index * 10,
+                ),
+            )
+        self.state.connection.commit()
+
+        current = ScoreResult(
+            90, "IGNITION", "STRONG WATCH", True, 0, {}, [], [], "test"
+        )
+        snapshot = MarketSnapshot(
+            chain="base",
+            token_address=TOKEN,
+            market_cap_usd=100_000,
+            liquidity_usd=20_000,
+            volume_5m_usd=8_000,
+            volume_1h_usd=20_000,
+            buys_5m=20,
+            sells_5m=5,
+        )
+        self.state.apply_target_estimate(self.candidate, snapshot, current)
+
+        self.assertGreater(current.target_multiple or 0, 5.0)
+        self.assertEqual(current.target_confidence, "LOW")
+        self.assertIn("5 comparable 24h outcomes", current.target_basis)

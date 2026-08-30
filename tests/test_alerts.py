@@ -27,7 +27,7 @@ class AlertFormatTests(unittest.TestCase):
         self.assertIn("A&amp;B", message)
         self.assertIn("T&lt;ST", message)
         self.assertIn("Beefy Call: BUY", message)
-        self.assertIn("2.1x upside scenario", message)
+        self.assertIn("3x model upside", message)
         self.assertIn("buyer control", message)
         self.assertNotIn("Strong qualifying flow", message)
         self.assertIn("<b>CA:</b>", message)
@@ -45,7 +45,7 @@ class AlertFormatTests(unittest.TestCase):
         result = ScoreResult(72, "IGNITION", "EARLY WATCH", True, 0, {}, ["fresh"], [], "flow fails")
         message = format_alert(candidate, market, result)
         self.assertIn("Beefy Verdict: WATCH", message)
-        self.assertIn("1.3x upside scenario", message)
+        self.assertIn("1.2x model upside", message)
         self.assertNotIn("Beefy Call: BUY", message)
 
     def test_watch_summary_changes_for_a_pullback_setup(self):
@@ -69,5 +69,40 @@ class AlertFormatTests(unittest.TestCase):
         result = ScoreResult(77, "IGNITION", "EARLY WATCH", True, 0, {}, [], [], "flow fails")
         message = format_alert(candidate, market, result)
         self.assertIn("dip-entry potential", message)
-        self.assertIn("upside scenario", message)
+        self.assertIn("model upside", message)
         self.assertNotIn("conviction is not high enough", message)
+
+    def test_alert_uses_history_aware_uncapped_target(self):
+        candidate = Candidate(
+            chain="base",
+            token_address="0x2222222222222222222222222222222222222222",
+            source="o1-b20",
+            symbol="RUN",
+        )
+        market = MarketSnapshot(
+            chain="base",
+            token_address=candidate.token_address,
+            liquidity_usd=20_000,
+            market_cap_usd=80_000,
+            volume_5m_usd=18_000,
+            buys_5m=28,
+            sells_5m=5,
+        )
+        result = ScoreResult(
+            92,
+            "IGNITION",
+            "STRONG WATCH",
+            True,
+            0,
+            {},
+            ["fresh"],
+            [],
+            "flow fails",
+            target_multiple=10.4,
+            target_confidence="HIGH",
+            target_basis="24 comparable 24h outcomes + live liquidity/flow structure",
+        )
+        message = format_alert(candidate, market, result)
+        self.assertIn("10.4x model upside", message)
+        self.assertIn("[HIGH]", message)
+        self.assertIn("24 comparable 24h outcomes", message)

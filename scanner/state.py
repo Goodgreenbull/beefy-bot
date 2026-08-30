@@ -9,6 +9,7 @@ from statistics import median
 from typing import Any
 
 from .models import Candidate, MarketSnapshot, ScoreResult, SecurityProfile
+from .targeting import combine_target, structural_target
 
 
 def _dt(value: str | None) -> datetime | None:
@@ -807,6 +808,75 @@ class SQLiteState:
                 self.connection.execute("SELECT COUNT(*) FROM wallet_reputation").fetchone()[0]
             ),
         }
+
+    def apply_target_estimate(
+        self,
+        candidate: Candidate,
+        snapshot: MarketSnapshot,
+        result: ScoreResult,
+    ) -> None:
+        """Attach a live, history-aware upside estimate to an eligible result."""
+        structural = structural_target(candidate, snapshot, result)
+        selected: list[sqlite3.Row] = []
+        selected_horizon = 0
+        for horizon in (1440, 360):
+            rows = self.connection.execute(
+                """
+                SELECT a.candidate_key, a.signal, a.stage, a.score, o.mfe_pct
+                FROM alert_outcomes o
+                JOIN alerts a ON a.id = o.alert_id
+                JOIN candidates c ON c.candidate_key = a.candidate_key
+                WHERE c.chain = ?
+                  AND o.horizon_minutes = ?
+                  AND o.mfe_pct IS NOT NULL
+                  AND COALESCE(o.capture_lag_minutes, 0) <= CASE ?
+                        WHEN 1440 THEN 120 ELSE 30
+                      END
+                ORDER BY o.captured_at DESC
+                LIMIT 500
+                """,
+                (candidate.chain, horizon, horizon),
+            ).fetchall()
+            unique: list[sqlite3.Row] = []
+            seen_candidates: set[str] = set()
+            for row in rows:
+                key = str(row["candidate_key"])
+                if key in seen_candidates:
+                    continue
+                seen_candidates.add(key)
+                unique.append(row)
+            tiers = (
+                [
+                    row
+                    for row in unique
+                    if row["signal"] == result.signal
+                    and row["stage"] == result.stage
+                    and abs(float(row["score"]) - result.score) <= 8
+                ],
+                [
+                    row
+                    for row in unique
+                    if row["signal"] == result.signal
+                    and abs(float(row["score"]) - result.score) <= 10
+                ],
+                [row for row in unique if row["signal"] == result.signal],
+            )
+            selected = next((tier for tier in tiers if len(tier) >= 5), [])
+            if selected:
+                selected_horizon = horizon
+                break
+
+        historical_mfe = [float(row["mfe_pct"] or 0.0) for row in selected]
+        target, confidence = combine_target(structural, historical_mfe)
+        result.target_multiple = target
+        result.target_confidence = confidence
+        if selected:
+            label = "24h" if selected_horizon == 1440 else "6h"
+            result.target_basis = (
+                f"{len(selected)} comparable {label} outcomes + live liquidity/flow structure"
+            )
+        else:
+            result.target_basis = "live liquidity/flow structure; comparable history building"
 
     def outcome_report(self) -> dict[str, Any]:
         outcome_counts = {

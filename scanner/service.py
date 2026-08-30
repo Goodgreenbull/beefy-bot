@@ -308,6 +308,11 @@ class ScannerService:
                     )
                 ):
                     try:
+                        try:
+                            self.state.apply_target_estimate(candidate, snapshot, result)
+                            self.state.mark_feed_success("target-model", 1)
+                        except Exception as error:
+                            self.state.mark_feed_error("target-model", error)
                         await self.alert_callback(candidate, snapshot, result)
                         self.state.mark_feed_success("telegram-alerts", 1)
                         alert_id = self.state.record_alert(candidate.key, result, snapshot)

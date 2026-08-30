@@ -14,7 +14,7 @@ The quality-v2 free profile scans every five minutes and separates the job into:
 2. SQLite state for candidates, rolling market snapshots, feed cursors, scores, feed health, alert outcomes, and deduplication while the free instance remains alive.
 3. DexScreener enrichment plus free GoPlus and Honeypot.is contract screening.
 4. Transparent ignition/reawakening scoring with anti-late, identity-copy, serial-deployer, concentration, tax, honeypot, and dangerous-admin filters.
-5. Concise Telegram WATCH/BUY verdicts with a bounded upside scenario from the alert price, a setup-specific one-line explanation, score, stage, age, liquidity, market cap, 5-minute flow, contract-check status, and invalidation.
+5. Concise Telegram WATCH/BUY verdicts with an uncapped, evidence-led upside model from the alert price, a setup-specific one-line explanation, score, stage, age, liquidity, market cap, 5-minute flow, contract-check status, and invalidation. The target is calculated only after the independent quality and safety gate, so theoretical upside cannot make a poor token eligible.
 6. Every alert is re-sampled after 15 minutes, one hour, six hours, and 24 hours. Beefy records return, observed maximum favourable excursion (MFE), and observed maximum adverse excursion (MAE). Three successful empty market lookups classify a disappeared pool as a terminal loss rather than silently dropping it.
 
 The old scheduled daily alpha report and two-hour breakout alert are no longer scheduled, so there is one automated signal path. `/trending` and `/lookup` remain available as manual research tools.
