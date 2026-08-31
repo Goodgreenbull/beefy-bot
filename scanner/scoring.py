@@ -21,7 +21,7 @@ class SignalScorer:
     VERIFIED_SOURCES = {
         "bankr", "flaunch", "clanker", "baseline", "o1-b20",
         "o1-robinhood", "o1-robinhood-stocks", "pons-v1", "pons-v2",
-        "pools-fun", "basestonk",
+        "pools-fun", "basestonk", "zora",
     }
 
     def __init__(self, config: ScannerConfig) -> None:
@@ -237,6 +237,16 @@ class SignalScorer:
                 anti_late_penalty += 20.0
 
         contract_screen_complete = bool(security.get("admin_checks_complete"))
+        platform_template_screen = bool(
+            platform_provenance
+            and security.get("checked")
+            and security.get("platform_template") in {"pons-v2", "pools-fun", "zora"}
+            and security.get("open_source") is not False
+            and float(security.get("buy_tax") or 0.0) < 5
+            and float(security.get("sell_tax") or 0.0) < 5
+            and not security.get("cannot_sell")
+            and not security.get("cannot_buy")
+        )
         safety_complete = (
             contract_screen_complete
             and (
@@ -354,8 +364,20 @@ class SignalScorer:
         if not inflection_confirmed:
             blockers.append("buyer/holder inflection not confirmed yet")
 
-        missing_upgrade_gates = int(not contract_screen_complete) + int(
+        missing_upgrade_gates = int(not (contract_screen_complete or platform_template_screen)) + int(
             not action_project_evidence
+        )
+        exceptional_flow = bool(
+            platform_provenance
+            and snapshot.flow_checked
+            and snapshot.unique_buyers_5m >= 6
+            and snapshot.net_new_wallets_5m >= 4
+            and snapshot.buys_5m >= 6
+            and buy_ratio >= 0.65
+            and unique_buyer_acceleration >= 1.15
+            and snapshot.social_links >= 1
+            and local_multiple < 1.80
+            and snapshot.price_change_5m < 45
         )
         upgrade_trigger: str | None = None
         if not contract_screen_complete:
@@ -386,11 +408,20 @@ class SignalScorer:
             and txns_5m >= 18 and buy_ratio >= 0.60 and snapshot.liquidity_usd >= 8_000
             and local_multiple < 2.0 and snapshot.deployer_sells_15m == 0
         )
-        scout_eligible = (
+        standard_scout = (
             common_gate and scout_score <= final_score < action_score
             and independent_signals >= 2 and missing_upgrade_gates <= 1
             and upgrade_trigger is not None
         )
+        exceptional_scout = (
+            common_gate
+            and self.config.exceptional_scout_score <= final_score < action_score
+            and exceptional_flow
+            and independent_signals >= 3
+            and missing_upgrade_gates <= 1
+            and upgrade_trigger is not None
+        )
+        scout_eligible = standard_scout or exceptional_scout
         eligible = a_plus_quality or action_eligible or scout_eligible
 
         reawakening = age_minutes > 360 and (buyer_acceleration >= 1.5 or volume_acceleration >= 1.5) and buy_ratio >= 0.55

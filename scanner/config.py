@@ -69,6 +69,7 @@ class ScannerConfig:
     interval_seconds: int = 300
     state_db: str = "scanner_state.sqlite3"
     alert_chat_id: str | None = None
+    exceptional_scout_score: float = 55.0
     scout_alert_score: float = 60.0
     min_alert_score: float = 70.0
     strong_alert_score: float = 80.0
@@ -154,6 +155,7 @@ class ScannerConfig:
                 or os.getenv("ADMIN_CHAT_ID")
                 or os.getenv("TELEGRAM_GROUP_ID")
             ),
+            exceptional_scout_score=_float("SCANNER_EXCEPTIONAL_SCOUT_SCORE", 55.0),
             scout_alert_score=_float("SCANNER_SCOUT_ALERT_SCORE", 60.0),
             min_alert_score=_float("SCANNER_MIN_ALERT_SCORE", 70.0),
             strong_alert_score=_float("SCANNER_STRONG_ALERT_SCORE", 80.0),

@@ -19,6 +19,8 @@ services:
         value: "80"
       - key: SCANNER_SCOUT_ALERT_SCORE
         value: "60"
+      - key: SCANNER_EXCEPTIONAL_SCOUT_SCORE
+        value: "55"
       - key: SCANNER_MAX_ALERTS_PER_CYCLE
         value: "3"
       - key: SCANNER_TOKEN_REALERT_HOURS

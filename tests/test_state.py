@@ -102,6 +102,10 @@ class SQLiteStateTests(unittest.TestCase):
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["score"], 64)
         self.assertEqual(rows[0]["blockers"][0], "contract safety not confirmed yet")
+        report = self.state.screening_report()
+        self.assertEqual(report["screened"], 1)
+        self.assertEqual(report["score_55_plus"], 1)
+        self.assertEqual(report["top_blockers"][0]["reason"], "contract screen pending")
 
     def test_alert_outcomes_track_all_horizons_mfe_mae_and_wallet_reputation(self):
         score = ScoreResult(84, "IGNITION", "STRONG WATCH", True, 0, {}, [], [], "test")

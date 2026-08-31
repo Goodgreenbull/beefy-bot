@@ -1,5 +1,6 @@
 import types
 import unittest
+from unittest.mock import AsyncMock, patch
 
 from scanner.config import ScannerConfig
 from scanner.feeds import (
@@ -18,11 +19,14 @@ from scanner.feeds import (
     PONS_V2_SELL_TOPIC,
     PonsV1Enricher,
     PonsV2Enricher,
+    PoolsFunLaunchFeed,
     ROBINHOOD_V4_POOL_MANAGER,
     RobinhoodMarketEnricher,
     RpcPairFeed,
     TokenRiskEnricher,
     TRANSFER_TOPIC,
+    ZoraExploreFeed,
+    _get_json,
     platform_factory_specs,
     PAIR_CREATED_TOPIC,
 )
@@ -57,9 +61,10 @@ def abi_strings(*values):
 
 
 class FakeResponse:
-    def __init__(self, body, status=200):
+    def __init__(self, body, status=200, headers=None):
         self.body = body
         self.status = status
+        self.headers = headers or {}
         self.url = types.SimpleNamespace(host="example.test")
 
     async def __aenter__(self):
@@ -102,6 +107,74 @@ class BankrSession:
                 ]
             }
         )
+
+
+class PlatformDiscoverySession:
+    def __init__(self):
+        self.calls = []
+
+    def get(self, url, **kwargs):
+        self.calls.append((url, kwargs.get("params") or {}))
+        if "api.bankr.bot" in url:
+            return FakeResponse(
+                {
+                    "results": [
+                        {
+                            "chain": "robinhood",
+                            "platform": "poolsfun",
+                            "tokenAddress": TOKEN,
+                            "poolId": PAIR,
+                            "name": "Pools Project",
+                            "symbol": "POOL",
+                            "deployerAddress": "0x5555555555555555555555555555555555555555",
+                            "deployerXUsername": "builder",
+                            "websiteUrl": "https://project.test",
+                            "deployedAt": "2026-08-31T12:00:00Z",
+                            "marketCapUsd": 12_000,
+                            "vol5m": 2_000,
+                            "txCount24h": 25,
+                        }
+                    ]
+                }
+            )
+        if "api-sdk.zora.engineering" in url:
+            return FakeResponse(
+                {
+                    "exploreList": {
+                        "edges": [
+                            {
+                                "node": {
+                                    "chainId": 8453,
+                                    "platformBlocked": False,
+                                    "address": TOKEN_TWO,
+                                    "name": "Base App Project",
+                                    "symbol": "BAP",
+                                    "coinType": "CONTENT",
+                                    "createdAt": "2026-08-31T12:01:00Z",
+                                    "creatorAddress": "0x9999999999999999999999999999999999999999",
+                                    "creatorProfile": {
+                                        "handle": "realbuilder",
+                                        "platformBlocked": False,
+                                        "socialAccounts": {
+                                            "twitter": {"username": "realbuilder"},
+                                            "farcaster": None,
+                                        },
+                                    },
+                                    "uniqueHolders": 12,
+                                }
+                            },
+                            {
+                                "node": {
+                                    "chainId": 8453,
+                                    "platformBlocked": True,
+                                    "address": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                                }
+                            },
+                        ]
+                    }
+                }
+            )
+        raise AssertionError(f"Unexpected URL {url}")
 
 
 class RpcSession:
@@ -492,6 +565,41 @@ class FeedTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(rows[1].pair_address, ROBINHOOD_V4_POOL_MANAGER)
         self.assertEqual(rows[1].metadata["profile_social_links"], 2)
         self.assertTrue(rows[1].metadata["verified_platform_api"])
+
+    async def test_public_json_feed_retries_a_rate_limit(self):
+        class RateLimitSession:
+            def __init__(self):
+                self.calls = 0
+
+            def get(self, url, **kwargs):
+                self.calls += 1
+                if self.calls == 1:
+                    return FakeResponse({}, status=429, headers={"Retry-After": "0"})
+                return FakeResponse({"ok": True})
+
+        session = RateLimitSession()
+        with patch("scanner.feeds.asyncio.sleep", new=AsyncMock()) as sleep:
+            payload = await _get_json(session, "https://example.test/feed")
+
+        self.assertEqual(payload, {"ok": True})
+        self.assertEqual(session.calls, 2)
+        sleep.assert_awaited_once()
+
+    async def test_pools_fun_and_zora_official_feeds_preserve_provenance(self):
+        session = PlatformDiscoverySession()
+        pools_rows = await PoolsFunLaunchFeed().discover(session, self.state)
+        zora_feed = ZoraExploreFeed()
+        zora_rows = await zora_feed.discover(session, self.state)
+        self.assertEqual(len(pools_rows), 1)
+        self.assertEqual(pools_rows[0].source, "pools-fun")
+        self.assertEqual(pools_rows[0].pair_address, PAIR)
+        self.assertEqual(pools_rows[0].metadata["profile_social_links"], 2)
+        self.assertEqual(len(zora_rows), 1)
+        self.assertEqual(zora_rows[0].source, "zora")
+        self.assertEqual(zora_rows[0].deployer, "0x9999999999999999999999999999999999999999")
+        self.assertEqual(zora_rows[0].metadata["profile_social_links"], 1)
+        self.assertEqual(self.state.get_cursor("zora:explore_lane"), "1")
+        self.assertEqual(session.calls[-1][1]["listType"], "NEW")
 
     async def test_rpc_pair_feed_selects_non_quote_token_and_advances_cursor(self):
         config = ScannerConfig(

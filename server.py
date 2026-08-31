@@ -457,6 +457,17 @@ async def scannerstatus_command(update: Update, context: ContextTypes.DEFAULT_TY
         "\n\nTop screened near-misses:\n" + "\n".join(near_miss_lines)
         if near_miss_lines else ""
     )
+    funnel = status.get("screening_report") or {}
+    blocker_text = ", ".join(
+        f"{item.get('reason')} ({item.get('count', 0)})"
+        for item in (funnel.get("top_blockers") or [])[:2]
+    )
+    funnel_text = (
+        f"\nFunnel: {funnel.get('screened', 0)} scored · "
+        f"55+ {funnel.get('score_55_plus', 0)} · "
+        f"40–54 {funnel.get('score_40_54', 0)}"
+        + (f"\nMain blockers: {blocker_text}" if blocker_text else "")
+    )
     await update.message.reply_text(
         "🔎 First-Leg Scanner\n\n"
         f"Cadence: every {scanner_config.interval_seconds // 60} minute(s)\n"
@@ -465,11 +476,12 @@ async def scannerstatus_command(update: Update, context: ContextTypes.DEFAULT_TY
         f"Snapshots (24h): {status.get('snapshots_24h', 0)}\n"
         f"Alerts (24h): {status.get('alerts_24h', 0)}\n"
         f"Outcome observations (24h): {status.get('outcomes_24h', 0)}\n"
-        f"SCOUT/ACTION/A+ thresholds: "
+        f"Exceptional-flow/SCOUT/ACTION/A+ thresholds: "
+        f"{status.get('exceptional_scout_threshold', scanner_config.exceptional_scout_score):.0f}/"
         f"{status.get('scout_threshold', scanner_config.scout_alert_score):.0f}/"
         f"{status.get('watch_threshold', scanner_config.min_alert_score):.0f}/"
         f"{status.get('buy_threshold', scanner_config.strong_alert_score):.0f}\n"
-        f"{health_line}{near_miss_text}"
+        f"{health_line}{funnel_text}{near_miss_text}"
     )
 
 
@@ -506,7 +518,8 @@ async def signalstats_command(update: Update, context: ContextTypes.DEFAULT_TYPE
             f"6h {counts.get(360, 0)} · 24h {counts.get(1440, 0)}"
         ),
         (
-            f"Current SCOUT/ACTION/A+: "
+            f"Current exceptional/SCOUT/ACTION/A+: "
+            f"{status.get('exceptional_scout_threshold', scanner_config.exceptional_scout_score):.0f}/"
             f"{status.get('scout_threshold', scanner_config.scout_alert_score):.0f}/"
             f"{status.get('watch_threshold', scanner_config.min_alert_score):.0f}/"
             f"{status.get('buy_threshold', scanner_config.strong_alert_score):.0f}"

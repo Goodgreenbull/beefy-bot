@@ -313,7 +313,9 @@ class SQLiteState:
 
     def list_active_candidates(self, max_age_hours: int, limit: int) -> list[Candidate]:
         cutoff = (datetime.now(timezone.utc) - timedelta(hours=max_age_hours)).isoformat()
-        fresh_limit = max(1, min(limit, int(limit * 0.7)))
+        # Discovery is noisy; keep enough capacity for strong candidates to be
+        # measured again before their first useful inflection has passed.
+        fresh_limit = max(1, min(limit, int(limit * 0.55)))
         recheck_limit = max(0, limit - fresh_limit)
         fresh_rows = self.connection.execute(
             """
@@ -343,7 +345,13 @@ class SQLiteState:
                 {exclusion}
                 GROUP BY c.candidate_key
                 ORDER BY
-                    CASE WHEN MAX(s.captured_at) IS NULL THEN 0 ELSE 1 END,
+                    CASE
+                        WHEN COALESCE(c.last_score, 0) >= 40 THEN 0
+                        WHEN MAX(s.captured_at) IS NULL THEN 1
+                        ELSE 2
+                    END,
+                    CASE WHEN COALESCE(c.last_score, 0) >= 40
+                         THEN COALESCE(c.last_score, 0) END DESC,
                     MAX(s.captured_at) ASC,
                     COALESCE(c.last_score, 0) DESC,
                     COALESCE(c.launch_at, c.first_seen_at) DESC
@@ -740,6 +748,47 @@ class SQLiteState:
                 }
             )
         return result
+
+    def screening_report(self, hours: int = 24) -> dict[str, Any]:
+        """Summarise the live funnel so zero alerts are diagnosable in Telegram."""
+        cutoff = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
+        rows = self.connection.execute(
+            """
+            SELECT last_score, last_result_json
+            FROM candidates
+            WHERE last_seen_at >= ? AND last_score IS NOT NULL
+            """,
+            (cutoff,),
+        ).fetchall()
+        blocker_counts: dict[str, int] = {}
+        for row in rows:
+            payload = json.loads(row["last_result_json"] or "{}")
+            for blocker in payload.get("blockers") or []:
+                label = str(blocker)
+                if "liquidity below" in label:
+                    label = "liquidity below minimum"
+                elif "contract" in label and ("pending" in label or "not confirmed" in label):
+                    label = "contract screen pending"
+                elif "project/social" in label or "project identity" in label:
+                    label = "project/social evidence thin"
+                elif "inflection not confirmed" in label:
+                    label = "buyer/holder inflection pending"
+                elif "too few 5m trades" in label:
+                    label = "too few 5m trades"
+                blocker_counts[label] = blocker_counts.get(label, 0) + 1
+        scores = [float(row["last_score"]) for row in rows]
+        top_blockers = sorted(
+            blocker_counts.items(), key=lambda item: (-item[1], item[0])
+        )[:3]
+        return {
+            "screened": len(scores),
+            "score_55_plus": sum(score >= 55 for score in scores),
+            "score_40_54": sum(40 <= score < 55 for score in scores),
+            "score_below_40": sum(score < 40 for score in scores),
+            "top_blockers": [
+                {"reason": reason, "count": count} for reason, count in top_blockers
+            ],
+        }
 
     def alert_allowed(
         self,

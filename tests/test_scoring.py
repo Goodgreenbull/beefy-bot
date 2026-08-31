@@ -276,6 +276,86 @@ class SignalScorerTests(unittest.TestCase):
         self.assertLess(result.score, 70)
         self.assertIn("independent contract screen", result.upgrade_trigger)
 
+    def test_exceptional_platform_flow_can_scout_below_standard_floor(self):
+        candidate = Candidate(
+            chain="robinhood",
+            token_address=TOKEN,
+            source="pons-v2",
+            launch_at=NOW - timedelta(minutes=5),
+            deployer="0x2222222222222222222222222222222222222222",
+            metadata={"verified_platform_event": True, "platform_terms_verified": True},
+        )
+        platform_security = {
+            "checked": True,
+            "admin_checks_complete": False,
+            "simulation_checked": False,
+            "sell_simulation_success": False,
+            "is_honeypot": False,
+            "cannot_buy": False,
+            "cannot_sell": False,
+            "open_source": True,
+            "buy_tax": 1,
+            "sell_tax": 1,
+            "platform_template": "pons-v2",
+        }
+        market = snapshot(
+            chain="robinhood",
+            social_links=1,
+            smart_wallet_buys=0,
+            exact_ca_mentions_5m=0,
+            exact_ca_mentions_15m=0,
+            credible_social_mentions_5m=0,
+            creator_reputation=0,
+            narrative_score=0,
+            buys_5m=8,
+            sells_5m=2,
+            unique_buyers_5m=7,
+            unique_buyers_15m=10,
+            net_new_wallets_5m=8,
+            net_new_wallets_15m=10,
+            liquidity_usd=7_000,
+            volume_5m_usd=1_000,
+            raw={"security": platform_security},
+        )
+        result = self.scorer.score(candidate, market, [], now=NOW)
+        self.assertTrue(result.eligible)
+        self.assertEqual(result.signal, "SCOUT")
+        self.assertGreaterEqual(result.score, 55)
+        self.assertLess(result.score, 60)
+
+    def test_exceptional_scout_still_rejects_low_liquidity_or_weak_flow(self):
+        candidate = Candidate(
+            chain="robinhood",
+            token_address=TOKEN,
+            source="pools-fun",
+            launch_at=NOW,
+            deployer="0x2222222222222222222222222222222222222222",
+            metadata={"verified_platform_api": True, "platform_terms_verified": True},
+        )
+        result = self.scorer.score(
+            candidate,
+            snapshot(
+                chain="robinhood",
+                liquidity_usd=2_500,
+                social_links=1,
+                smart_wallet_buys=0,
+                exact_ca_mentions_5m=0,
+                exact_ca_mentions_15m=0,
+                credible_social_mentions_5m=0,
+                creator_reputation=0,
+                narrative_score=0,
+                buys_5m=8,
+                sells_5m=2,
+                unique_buyers_5m=7,
+                unique_buyers_15m=10,
+                net_new_wallets_5m=5,
+                raw={},
+            ),
+            [],
+            now=NOW,
+        )
+        self.assertFalse(result.eligible)
+
     def test_provenance_alone_is_not_a_scout_when_two_upgrade_gates_are_missing(self):
         candidate = Candidate(
             chain="robinhood",

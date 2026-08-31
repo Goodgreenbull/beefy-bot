@@ -21,11 +21,13 @@ from .feeds import (
     OnchainFlowEnricher,
     PonsV1Enricher,
     PonsV2Enricher,
+    PoolsFunLaunchFeed,
     RobinhoodMarketEnricher,
     RpcPairFeed,
     SignalOverlay,
     SmartWalletMonitor,
     TokenRiskEnricher,
+    ZoraExploreFeed,
     _integer,
     _number,
     _timestamp,
@@ -62,9 +64,11 @@ class ScannerService:
         self.smart_wallet_monitor = SmartWalletMonitor(config)
         self.feeds = [
             BankrLaunchFeed(config),
+            PoolsFunLaunchFeed(),
             FlaunchFeed(config),
             ClankerLaunchFeed(),
             BaselineLaunchFeed(),
+            ZoraExploreFeed(),
             DexScreenerProfilesFeed(),
         ]
         self.feeds.extend(GeckoTerminalNewPoolsFeed(network) for network in config.gecko_networks)
@@ -181,6 +185,7 @@ class ScannerService:
                 "baseline",
                 "clanker",
                 "flaunch",
+                "zora",
             ):
                 if lane in sources:
                     return lane
@@ -392,40 +397,49 @@ class ScannerService:
                 "pons-v2",
                 "pools-fun",
                 "basestonk",
+                "zora",
             }
-            flow_targets = sorted(
-                [
-                    (candidate, snapshot)
-                    for candidate, snapshot, _ in enriched
-                    if snapshot is not None
-                    and not snapshot.flow_checked
-                    and not self.state.blocked_identity_theme(candidate)
-                    and len(snapshot.pair_address or candidate.pair_address or "") == 42
-                    and snapshot.price_usd
-                    and snapshot.liquidity_usd >= self.config.min_liquidity_usd
-                ],
-                key=lambda item: (
-                    int(bool(set(item[0].source.split(",")) & direct_sources)) * 10
-                    + _integer(
-                        (overlays.get(item[0].key) or {}).get("exactCaMentions5m"),
-                        0,
-                    ) * 3
-                    + _integer(
-                        (overlays.get(item[0].key) or {}).get("credibleSocialMentions5m"),
-                        0,
-                    ) * 5
-                    + int(
-                        _number(
-                            (overlays.get(item[0].key) or {}).get("creatorActivityScore"),
-                            0,
-                        ) * 5
-                    ),
-                    item[1].social_links,
-                    item[1].buys_5m + item[1].sells_5m,
-                    item[1].volume_5m_usd,
-                ),
-                reverse=True,
-            )[: self.config.max_flow_checks_per_cycle]
+            flow_candidates = [
+                (candidate, snapshot)
+                for candidate, snapshot, _ in enriched
+                if snapshot is not None
+                and not snapshot.flow_checked
+                and not self.state.blocked_identity_theme(candidate)
+                and len(snapshot.pair_address or candidate.pair_address or "") == 42
+                and snapshot.price_usd
+                and snapshot.liquidity_usd >= self.config.min_liquidity_usd
+            ]
+
+            def flow_priority(item: tuple[Candidate, MarketSnapshot]) -> float:
+                candidate, snapshot = item
+                external = overlays.get(candidate.key) or {}
+                txns_5m = snapshot.buys_5m + snapshot.sells_5m
+                return (
+                    int(bool(set(candidate.source.split(",")) & direct_sources)) * 6.0
+                    + min(12.0, txns_5m / 10.0)
+                    + min(8.0, snapshot.volume_5m_usd / 2_000.0)
+                    + min(6.0, snapshot.social_links * 1.5)
+                    + _integer(external.get("exactCaMentions5m"), 0) * 3.0
+                    + _integer(external.get("credibleSocialMentions5m"), 0) * 5.0
+                    + _number(external.get("creatorActivityScore"), 0.0) * 5.0
+                )
+
+            ranked_flow = sorted(flow_candidates, key=flow_priority, reverse=True)
+            direct_ranked = [
+                item
+                for item in ranked_flow
+                if set(item[0].source.split(",")) & direct_sources
+            ]
+            limit = self.config.max_flow_checks_per_cycle
+            direct_reserve = min(len(direct_ranked), max(1, limit // 2))
+            flow_targets = direct_ranked[:direct_reserve]
+            selected_flow_keys = {item[0].key for item in flow_targets}
+            flow_targets.extend(
+                item
+                for item in ranked_flow
+                if item[0].key not in selected_flow_keys
+            )
+            flow_targets = flow_targets[:limit]
             flow_results = await asyncio.gather(
                 *(
                     self.flow_enricher.enrich(self.session, candidate, snapshot)
@@ -526,6 +540,7 @@ class ScannerService:
                                 "pons-v2",
                                 "pools-fun",
                                 "basestonk",
+                                "zora",
                             }
                             for source in item[0].source.split(",")
                         )
@@ -617,6 +632,7 @@ class ScannerService:
                 "watch_threshold": thresholds["watch"],
                 "buy_threshold": thresholds["buy"],
                 "scout_threshold": thresholds["scout"],
+                "exceptional_scout_threshold": self.config.exceptional_scout_score,
                 "calibration_samples": thresholds["samples"],
                 "calibrated": thresholds["calibrated"],
                 "errors": sum(1 for item in self.state.health() if item.get("last_error")),
@@ -643,5 +659,6 @@ class ScannerService:
             "outcome_report": self.state.outcome_report(),
             "smart_wallet_report": wallet_report,
             "near_misses": self.state.near_misses(),
+            "screening_report": self.state.screening_report(),
             "feeds": self.state.health(),
         }

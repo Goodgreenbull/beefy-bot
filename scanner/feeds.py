@@ -112,12 +112,21 @@ def _decode_abi_strings(value: str | None, count: int) -> list[str]:
 
 
 async def _get_json(session: aiohttp.ClientSession, url: str, **kwargs: Any) -> Any:
-    async with session.get(url, **kwargs) as response:
-        if response.status == 429:
-            raise RuntimeError(f"rate limited by {response.url.host}")
-        if response.status >= 400:
-            raise RuntimeError(f"HTTP {response.status} from {response.url.host}")
-        return await response.json(content_type=None)
+    host = url.split("/", 3)[2] if "://" in url else url
+    for attempt in range(3):
+        async with session.get(url, **kwargs) as response:
+            if response.status == 429:
+                retry_header = getattr(response, "headers", {}).get("Retry-After")
+                try:
+                    retry_after = float(retry_header)
+                except (TypeError, ValueError):
+                    retry_after = 0.75 * (2 ** attempt)
+            elif response.status >= 400:
+                raise RuntimeError(f"HTTP {response.status} from {host}")
+            else:
+                return await response.json(content_type=None)
+        await asyncio.sleep(min(4.0, max(0.5, retry_after)))
+    raise RuntimeError(f"rate limited by {host} after retries")
 
 
 class BankrLaunchFeed:
@@ -159,6 +168,143 @@ class BankrLaunchFeed:
                         "tweet_url": launch.get("tweetUrl"),
                         "website_url": launch.get("websiteUrl"),
                         "verified_platform_api": True,
+                    },
+                )
+            )
+        return candidates
+
+
+class PoolsFunLaunchFeed:
+    """Read pools.fun launches from the public feed used by its own frontend."""
+
+    name = "pools-fun"
+    url = "https://api.bankr.bot/discover"
+
+    async def discover(self, session: aiohttp.ClientSession, state: "SQLiteState") -> list[Candidate]:
+        payload = await _get_json(
+            session,
+            self.url,
+            params={
+                "platform": "poolsfun",
+                "sortBy": "deployedAt",
+                "order": "desc",
+                "limit": "50",
+            },
+        )
+        rows = payload.get("results", []) if isinstance(payload, dict) else []
+        candidates: list[Candidate] = []
+        for row in rows:
+            if not isinstance(row, dict) or str(row.get("chain", "")).lower() != "robinhood":
+                continue
+            address = normalise_address(row.get("tokenAddress"))
+            if len(address) != 42 or str(row.get("platform", "")).lower() != "poolsfun":
+                continue
+            social_links = sum(
+                bool(row.get(field))
+                for field in (
+                    "deployerXUsername",
+                    "feeRecipientXUsername",
+                    "tweetUrl",
+                    "websiteUrl",
+                )
+            )
+            pair = normalise_address(row.get("poolId"))
+            candidates.append(
+                Candidate(
+                    chain="robinhood",
+                    token_address=address,
+                    pair_address=pair if len(pair) == 42 else None,
+                    source=self.name,
+                    launch_at=_timestamp(row.get("deployedAt")),
+                    name=row.get("name"),
+                    symbol=row.get("symbol"),
+                    deployer=row.get("deployerAddress"),
+                    chart_url=f"https://pools.fun/token/{address}",
+                    metadata={
+                        "verified_platform_api": True,
+                        "platform_terms_verified": True,
+                        "profile_social_links": social_links,
+                        "deployer_x_username": row.get("deployerXUsername"),
+                        "fee_recipient_x_username": row.get("feeRecipientXUsername"),
+                        "tweet_url": row.get("tweetUrl"),
+                        "website_url": row.get("websiteUrl"),
+                        "paired_asset": row.get("pairedAsset"),
+                        "platform_market": {
+                            "market_cap_usd": row.get("marketCapUsd"),
+                            "volume_5m_usd": row.get("vol5m"),
+                            "volume_1h_usd": row.get("vol1h"),
+                            "volume_24h_usd": row.get("vol24h"),
+                            "tx_count_24h": row.get("txCount24h"),
+                            "last_trade_at": row.get("lastTradeAt"),
+                        },
+                    },
+                )
+            )
+        return candidates
+
+
+class ZoraExploreFeed:
+    """One rate-limited official Zora explore request per cycle for Base App coins."""
+
+    name = "zora"
+    url = "https://api-sdk.zora.engineering/explore"
+    list_types = ("NEW", "LAST_TRADED_UNIQUE")
+
+    async def discover(self, session: aiohttp.ClientSession, state: "SQLiteState") -> list[Candidate]:
+        cursor_key = "zora:explore_lane"
+        lane_index = _integer(state.get_cursor(cursor_key), 0) % len(self.list_types)
+        list_type = self.list_types[lane_index]
+        payload = await _get_json(
+            session,
+            self.url,
+            params={"listType": list_type, "count": "30"},
+        )
+        state.set_cursor(cursor_key, str((lane_index + 1) % len(self.list_types)))
+        explore = payload.get("exploreList", {}) if isinstance(payload, dict) else {}
+        edges = explore.get("edges", []) if isinstance(explore, dict) else []
+        candidates: list[Candidate] = []
+        for edge in edges:
+            row = edge.get("node", {}) if isinstance(edge, dict) else {}
+            profile = row.get("creatorProfile") or {}
+            if (
+                not isinstance(row, dict)
+                or _integer(row.get("chainId"), 0) != 8453
+                or row.get("platformBlocked")
+                or (isinstance(profile, dict) and profile.get("platformBlocked"))
+            ):
+                continue
+            address = normalise_address(row.get("address"))
+            if len(address) != 42:
+                continue
+            social_accounts = (
+                (profile.get("socialAccounts") or {}) if isinstance(profile, dict) else {}
+            )
+            social_links = (
+                sum(bool(value) for value in social_accounts.values())
+                if isinstance(social_accounts, dict)
+                else 0
+            )
+            pool_key = row.get("uniswapV4PoolKey") or {}
+            candidates.append(
+                Candidate(
+                    chain="base",
+                    token_address=address,
+                    source=self.name,
+                    launch_at=_timestamp(row.get("createdAt")),
+                    name=row.get("name"),
+                    symbol=row.get("symbol"),
+                    deployer=row.get("creatorAddress"),
+                    metadata={
+                        "verified_platform_api": True,
+                        "platform_terms_verified": True,
+                        "profile_social_links": social_links,
+                        "creator_handle": profile.get("handle") if isinstance(profile, dict) else None,
+                        "creator_social_accounts": social_accounts,
+                        "coin_type": row.get("coinType"),
+                        "description": row.get("description"),
+                        "unique_holders": row.get("uniqueHolders"),
+                        "zora_list_type": list_type,
+                        "zora_pool_key": pool_key,
                     },
                 )
             )
@@ -1352,7 +1498,37 @@ class OnchainFlowEnricher:
     def __init__(self, config: ScannerConfig) -> None:
         self.config = config
         self.rpc_urls = {"base": config.base_rpc_url, "robinhood": config.robinhood_rpc_url}
-        self._semaphore = asyncio.Semaphore(max(1, min(config.dex_concurrency, 4)))
+        self._semaphore = asyncio.Semaphore(max(1, min(config.dex_concurrency, 2)))
+        self._request_locks = {url: asyncio.Lock() for url in self.rpc_urls.values()}
+        self._last_request_at = {url: 0.0 for url in self.rpc_urls.values()}
+
+    async def _post_rpc(
+        self,
+        session: aiohttp.ClientSession,
+        url: str,
+        payload: dict[str, Any] | list[dict[str, Any]],
+        label: str,
+    ) -> Any:
+        lock = self._request_locks.setdefault(url, asyncio.Lock())
+        async with lock:
+            for attempt in range(3):
+                elapsed = asyncio.get_running_loop().time() - self._last_request_at.get(url, 0.0)
+                if elapsed < 0.20:
+                    await asyncio.sleep(0.20 - elapsed)
+                async with session.post(url, json=payload) as response:
+                    self._last_request_at[url] = asyncio.get_running_loop().time()
+                    if response.status == 429:
+                        retry_header = getattr(response, "headers", {}).get("Retry-After")
+                        try:
+                            retry_after = float(retry_header)
+                        except (TypeError, ValueError):
+                            retry_after = 0.75 * (2 ** attempt)
+                    elif response.status >= 400:
+                        raise RuntimeError(f"{label} HTTP {response.status}")
+                    else:
+                        return await response.json(content_type=None)
+                await asyncio.sleep(min(4.0, max(0.5, retry_after)))
+        raise RuntimeError(f"{label} HTTP 429 after retries")
 
     async def _rpc(
         self,
@@ -1361,13 +1537,12 @@ class OnchainFlowEnricher:
         method: str,
         params: list[Any],
     ) -> Any:
-        async with session.post(
+        payload = await self._post_rpc(
+            session,
             url,
-            json={"jsonrpc": "2.0", "id": 1, "method": method, "params": params},
-        ) as response:
-            if response.status >= 400:
-                raise RuntimeError(f"on-chain flow RPC HTTP {response.status}")
-            payload = await response.json(content_type=None)
+            {"jsonrpc": "2.0", "id": 1, "method": method, "params": params},
+            "on-chain flow RPC",
+        )
         if payload.get("error"):
             raise RuntimeError(payload["error"].get("message", "on-chain flow RPC error"))
         return payload.get("result")
@@ -1390,10 +1565,9 @@ class OnchainFlowEnricher:
             }
             for index, tx_hash in enumerate(selected)
         ]
-        async with session.post(url, json=requests) as response:
-            if response.status >= 400:
-                raise RuntimeError(f"on-chain flow transaction RPC HTTP {response.status}")
-            payload = await response.json(content_type=None)
+        payload = await self._post_rpc(
+            session, url, requests, "on-chain flow transaction RPC"
+        )
         rows = payload if isinstance(payload, list) else []
         return {
             selected[int(row["id"])]: normalise_address((row.get("result") or {}).get("from"))

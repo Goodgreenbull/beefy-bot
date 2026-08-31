@@ -17,6 +17,7 @@ class ScannerConfigTests(unittest.TestCase):
         self.assertEqual(config.warmup_cycles, 1)
         self.assertEqual(config.token_realert_hours, 24)
         self.assertEqual(config.security_check_min_score, 45)
+        self.assertEqual(config.exceptional_scout_score, 55)
         self.assertEqual(config.max_flow_checks_per_cycle, 12)
         self.assertEqual(config.max_robinhood_market_checks_per_cycle, 18)
         self.assertTrue(config.dex_factories["robinhood"])
