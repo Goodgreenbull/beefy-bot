@@ -12,6 +12,14 @@ from scanner.feeds import (
     O1_FACTORIES,
     O1_LAUNCHED_TOPIC,
     OnchainFlowEnricher,
+    PONS_V1_LAUNCHED_TOPIC,
+    PONS_V2_BUY_TOPIC,
+    PONS_V2_LAUNCHED_TOPIC,
+    PONS_V2_SELL_TOPIC,
+    PonsV1Enricher,
+    PonsV2Enricher,
+    ROBINHOOD_V4_POOL_MANAGER,
+    RobinhoodMarketEnricher,
     RpcPairFeed,
     TokenRiskEnricher,
     TRANSFER_TOPIC,
@@ -24,7 +32,28 @@ from scanner.state import SQLiteState
 
 TOKEN = "0x3333333333333333333333333333333333333333"
 PAIR = "0x4444444444444444444444444444444444444444"
+PAIR_TWO = "0x7777777777777777777777777777777777777777"
+TOKEN_TWO = "0x8888888888888888888888888888888888888888"
 WETH = "0x4200000000000000000000000000000000000006"
+ROBINHOOD_WETH = "0x0bd7d308f8e1639fab988df18a8011f41eacad73"
+
+
+def abi_words(*values):
+    return "0x" + "".join(f"{value:064x}" for value in values)
+
+
+def abi_strings(*values):
+    heads = []
+    tails = []
+    offset = len(values) * 32
+    for value in values:
+        encoded = value.encode()
+        padded = encoded + b"\0" * ((32 - len(encoded) % 32) % 32)
+        tail = len(encoded).to_bytes(32, "big") + padded
+        heads.append(offset.to_bytes(32, "big"))
+        tails.append(tail)
+        offset += len(tail)
+    return "0x" + (b"".join(heads + tails)).hex()
 
 
 class FakeResponse:
@@ -56,6 +85,18 @@ class BankrSession:
                         "tokenSymbol": "TEST",
                         "timestamp": 1_777_111_200_000,
                         "deployer": {"walletAddress": "0x5555555555555555555555555555555555555555"},
+                    },
+                    {
+                        "status": "deployed",
+                        "chain": "robinhood",
+                        "tokenAddress": TOKEN_TWO,
+                        "tokenName": "Robinhood Test",
+                        "tokenSymbol": "RTEST",
+                        "poolId": "0xpool",
+                        "launchType": "doppler",
+                        "tweetUrl": "https://x.com/example/status/1",
+                        "websiteUrl": "https://example.test",
+                        "deployer": {"walletAddress": "0x9999999999999999999999999999999999999999"},
                     },
                     {"status": "deployed", "chain": "solana", "tokenAddress": "ignored"},
                 ]
@@ -134,6 +175,181 @@ class PlatformSession:
                 }
             )
         raise AssertionError(f"Unexpected method {json['method']}")
+
+
+class PonsPlatformSession:
+    def post(self, url, json):
+        if isinstance(json, list):
+            return FakeResponse(
+                [
+                    {
+                        "jsonrpc": "2.0",
+                        "id": item["id"],
+                        "result": {"timestamp": hex(1_777_111_200)},
+                    }
+                    for item in json
+                ]
+            )
+        if json["method"] == "eth_blockNumber":
+            return FakeResponse({"jsonrpc": "2.0", "id": 1, "result": hex(100)})
+        if json["method"] == "eth_getLogs":
+            deployer = "0x5555555555555555555555555555555555555555"
+            v1_factory = "0xa5aab3f0c6eeadf30ef1d3eb997108e976351feb"
+            v2_factory = "0x7ed598bcef8bd9edd8c97a195c6d13f40801ec7e"
+            rows = [
+                {
+                    "address": v1_factory,
+                    "topics": [
+                        PONS_V1_LAUNCHED_TOPIC,
+                        "0x" + TOKEN.removeprefix("0x").rjust(64, "0"),
+                        "0x" + deployer.removeprefix("0x").rjust(64, "0"),
+                        "0x" + ("66" * 20).rjust(64, "0"),
+                    ],
+                    "data": abi_words(int(ROBINHOOD_WETH, 16), int(PAIR, 16), 1, 2),
+                    "blockNumber": hex(99),
+                    "transactionHash": "0xpons1",
+                },
+                {
+                    "address": v2_factory,
+                    "topics": [
+                        PONS_V2_LAUNCHED_TOPIC,
+                        "0x" + TOKEN_TWO.removeprefix("0x").rjust(64, "0"),
+                        "0x" + PAIR_TWO.removeprefix("0x").rjust(64, "0"),
+                        "0x" + deployer.removeprefix("0x").rjust(64, "0"),
+                    ],
+                    "data": abi_words(int(ROBINHOOD_WETH, 16)),
+                    "blockNumber": hex(100),
+                    "transactionHash": "0xpons2",
+                },
+            ]
+            return FakeResponse({"jsonrpc": "2.0", "id": 1, "result": rows})
+        raise AssertionError(f"Unexpected method {json['method']}")
+
+
+class PonsMarketSession:
+    def get(self, url, **kwargs):
+        if "coins.llama.fi" in url:
+            return FakeResponse({"coins": {"coingecko:ethereum": {"price": 2_500}}})
+        raise AssertionError(f"Unexpected URL {url}")
+
+    def post(self, url, json):
+        if not isinstance(json, list):
+            raise AssertionError(f"Unexpected RPC payload {json}")
+        sqrt_price = int((1000 ** 0.5) * (2 ** 96))
+        by_selector = {
+            "0x3850c7bd": abi_words(sqrt_price, 0, 0, 0, 0, 0, 1),
+            "0x70a08231": abi_words(2 * 10**18),
+            "0x18160ddd": abi_words(1_000_000_000 * 10**18),
+            "0x313ce567": abi_words(18),
+            "0x06fdde03": abi_strings("Pons Project"),
+            "0x95d89b41": abi_strings("PONSX"),
+            "0x53cd512a": abi_strings("https://x.com/ponsx", "", "", "https://pons.test", ""),
+        }
+        rows = []
+        for item in json:
+            selector = item["params"][0]["data"][:10]
+            rows.append(
+                {"jsonrpc": "2.0", "id": item["id"], "result": by_selector[selector]}
+            )
+        return FakeResponse(rows)
+
+
+class PonsV2MarketSession:
+    def get(self, url, **kwargs):
+        if "coins.llama.fi" in url:
+            return FakeResponse({"coins": {"coingecko:ethereum": {"price": 2_500}}})
+        raise AssertionError(f"Unexpected URL {url}")
+
+    def post(self, url, json):
+        if not isinstance(json, list):
+            raise AssertionError(f"Unexpected RPC payload {json}")
+        if any(item["method"] == "eth_call" for item in json):
+            by_selector = {
+                "0x0902f1ac": abi_words(2 * 10**18, 1_000_000_000 * 10**18),
+                "0x4f1f58fd": abi_words(1 * 10**18),
+                "0x24a9d853": abi_words(100),
+                "0xc1bb8901": abi_words(100),
+                "0x18160ddd": abi_words(1_000_000_000 * 10**18),
+                "0x313ce567": abi_words(18),
+                "0x06fdde03": abi_strings("Curve Project"),
+                "0x95d89b41": abi_strings("CURVE"),
+                "0x53cd512a": abi_strings("https://x.com/curve", "", "", "https://curve.test", ""),
+            }
+            rows = []
+            for item in json:
+                result = (
+                    hex(1_000)
+                    if item["method"] == "eth_blockNumber"
+                    else by_selector[item["params"][0]["data"][:10]]
+                )
+                rows.append({"jsonrpc": "2.0", "id": item["id"], "result": result})
+            return FakeResponse(rows)
+
+        wallet = "0x9999999999999999999999999999999999999999"
+        curve_topic = "0x" + PAIR_TWO.removeprefix("0x").rjust(64, "0")
+        wallet_topic = "0x" + wallet.removeprefix("0x").rjust(64, "0")
+        zero_topic = "0x" + "0" * 64
+        responses = []
+        for item in json:
+            topic = item["params"][0]["topics"][0]
+            if topic == PONS_V2_BUY_TOPIC:
+                rows = [
+                    {
+                        "topics": [PONS_V2_BUY_TOPIC, wallet_topic],
+                        "data": abi_words(10**18, 500 * 10**18),
+                        "blockNumber": hex(990),
+                    }
+                ]
+            elif topic == PONS_V2_SELL_TOPIC:
+                rows = [
+                    {
+                        "topics": [PONS_V2_SELL_TOPIC, wallet_topic],
+                        "data": abi_words(100 * 10**18, 5 * 10**17),
+                        "blockNumber": hex(995),
+                    }
+                ]
+            else:
+                rows = [
+                    {
+                        "topics": [TRANSFER_TOPIC, zero_topic, curve_topic],
+                        "data": hex(1_000_000_000 * 10**18),
+                        "blockNumber": hex(800),
+                    },
+                    {
+                        "topics": [TRANSFER_TOPIC, curve_topic, wallet_topic],
+                        "data": hex(500 * 10**18),
+                        "blockNumber": hex(990),
+                    },
+                ]
+            responses.append({"jsonrpc": "2.0", "id": item["id"], "result": rows})
+        return FakeResponse(responses)
+
+
+class HooderSession:
+    def get(self, url, **kwargs):
+        return FakeResponse(
+            {
+                "success": True,
+                "data": {
+                    "name": "Indexed Robinhood Token",
+                    "symbol": "IRT",
+                    "priceUsd": 0.002,
+                    "liquidityUsd": 12_000,
+                    "volume24hUsd": 30_000,
+                    "priceChange24h": 20,
+                    "isStale": False,
+                    "sources": ["DexScreener"],
+                },
+            }
+        )
+
+    def post(self, url, json):
+        return FakeResponse(
+            [
+                {"jsonrpc": "2.0", "id": 0, "result": hex(1_000_000 * 10**18)},
+                {"jsonrpc": "2.0", "id": 1, "result": hex(18)},
+            ]
+        )
 
 
 class FlowSession:
@@ -267,11 +483,15 @@ class FeedTests(unittest.IsolatedAsyncioTestCase):
     async def asyncTearDown(self):
         self.state.close()
 
-    async def test_bankr_filters_to_deployed_base_launches(self):
+    async def test_bankr_keeps_deployed_base_and_robinhood_launches(self):
         rows = await BankrLaunchFeed(ScannerConfig()).discover(BankrSession(), self.state)
-        self.assertEqual(len(rows), 1)
+        self.assertEqual(len(rows), 2)
         self.assertEqual(rows[0].token_address, TOKEN)
         self.assertEqual(rows[0].symbol, "TEST")
+        self.assertEqual(rows[1].chain, "robinhood")
+        self.assertEqual(rows[1].pair_address, ROBINHOOD_V4_POOL_MANAGER)
+        self.assertEqual(rows[1].metadata["profile_social_links"], 2)
+        self.assertTrue(rows[1].metadata["verified_platform_api"])
 
     async def test_rpc_pair_feed_selects_non_quote_token_and_advances_cursor(self):
         config = ScannerConfig(
@@ -294,6 +514,80 @@ class FeedTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(rows[0].token_address, TOKEN)
         self.assertEqual(rows[0].source, "o1-b20")
         self.assertTrue(rows[0].metadata["verified_platform_event"])
+
+    async def test_pons_v1_and_v2_factory_events_preserve_pool_and_creator(self):
+        config = ScannerConfig(rpc_lookback_blocks=20, rpc_max_block_span=20)
+        feed = FactoryLaunchFeed(
+            "robinhood",
+            "https://rpc.example",
+            platform_factory_specs(config, "robinhood"),
+            config,
+        )
+        rows = await feed.discover(PonsPlatformSession(), self.state)
+        by_source = {row.source: row for row in rows}
+        self.assertEqual(by_source["pons-v1"].pair_address, PAIR)
+        self.assertEqual(by_source["pons-v1"].metadata["quote_token"], ROBINHOOD_WETH)
+        self.assertEqual(by_source["pons-v2"].pair_address, PAIR_TWO)
+        self.assertEqual(
+            by_source["pons-v2"].deployer,
+            "0x5555555555555555555555555555555555555555",
+        )
+        self.assertTrue(by_source["pons-v2"].metadata["platform_terms_verified"])
+
+    async def test_pons_v1_market_reads_price_liquidity_and_socials_onchain(self):
+        candidate = Candidate(
+            chain="robinhood",
+            token_address=TOKEN,
+            pair_address=PAIR,
+            source="pons-v1",
+            deployer="0x5555555555555555555555555555555555555555",
+            metadata={"quote_token": ROBINHOOD_WETH},
+        )
+        market = await PonsV1Enricher(ScannerConfig()).enrich(
+            PonsMarketSession(), candidate
+        )
+        self.assertIsNotNone(market)
+        self.assertAlmostEqual(market.price_usd, 2.5, places=6)
+        self.assertAlmostEqual(market.liquidity_usd, 10_000, places=2)
+        self.assertEqual(market.social_links, 2)
+        self.assertEqual(market.raw["symbol"], "PONSX")
+
+    async def test_pons_v2_native_curve_reads_flow_and_safety_onchain(self):
+        candidate = Candidate(
+            chain="robinhood",
+            token_address=TOKEN_TWO,
+            pair_address=PAIR_TWO,
+            source="pons-v2",
+            deployer="0x5555555555555555555555555555555555555555",
+            metadata={
+                "quote_token": "0x0000000000000000000000000000000000000000",
+                "block_number": 800,
+                "factory": "0x7ed598bcef8bd9edd8c97a195c6d13f40801ec7e",
+            },
+        )
+        market = await PonsV2Enricher(ScannerConfig()).enrich(
+            PonsV2MarketSession(), candidate
+        )
+        self.assertIsNotNone(market)
+        self.assertAlmostEqual(market.price_usd, 0.000005, places=9)
+        self.assertAlmostEqual(market.market_cap_usd, 5_000, places=2)
+        self.assertAlmostEqual(market.volume_5m_usd, 3_750, places=2)
+        self.assertEqual(market.unique_buyers_5m, 1)
+        self.assertEqual(market.unique_sellers_5m, 1)
+        self.assertEqual(market.social_links, 2)
+        self.assertEqual(market.raw["security"]["buy_tax"], 2)
+        self.assertFalse(market.raw["security"]["admin_checks_complete"])
+
+    async def test_hooderscan_fallback_adds_robinhood_market_cap(self):
+        candidate = Candidate(
+            chain="robinhood", token_address=TOKEN_TWO, source="bankr"
+        )
+        market = await RobinhoodMarketEnricher(ScannerConfig()).enrich(
+            HooderSession(), candidate
+        )
+        self.assertIsNotNone(market)
+        self.assertEqual(market.liquidity_usd, 12_000)
+        self.assertEqual(market.market_cap_usd, 2_000)
 
     async def test_clanker_and_baseline_public_feeds_preserve_identity(self):
         session = DirectFeedSession()

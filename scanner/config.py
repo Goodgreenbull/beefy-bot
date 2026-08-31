@@ -24,6 +24,11 @@ BASE_DEX_FACTORIES = {
     "0xc35dadb65012ec5796536bd9864ed8773abc74c4",  # Sushi V3
 }
 
+ROBINHOOD_DEX_FACTORIES = {
+    "0x1f7d7550b1b028f7571e69a784071f0205fd2efa",  # Uniswap V3 (pons V1)
+    "0xe51960f1b45f1c9fb6d166e6a884f866fc70433b",  # Sushi V3 (pools.fun layer)
+}
+
 
 def _bool(name: str, default: bool) -> bool:
     value = os.getenv(name)
@@ -89,10 +94,11 @@ class ScannerConfig:
     rpc_max_block_span: int = 1_800
     http_timeout_seconds: int = 12
     dex_concurrency: int = 6
-    security_check_min_score: float = 55.0
+    security_check_min_score: float = 45.0
     security_cache_minutes: int = 30
     max_security_checks_per_cycle: int = 12
-    max_flow_checks_per_cycle: int = 8
+    max_flow_checks_per_cycle: int = 12
+    max_robinhood_market_checks_per_cycle: int = 18
     flow_5m_blocks: int = 150
     flow_15m_blocks: int = 450
     max_flow_transactions: int = 60
@@ -108,7 +114,10 @@ class ScannerConfig:
     overlay_url: str | None = None
     factory_feeds: dict = field(default_factory=dict)
     dex_factories: dict[str, set[str]] = field(
-        default_factory=lambda: {"base": set(BASE_DEX_FACTORIES), "robinhood": set()}
+        default_factory=lambda: {
+            "base": set(BASE_DEX_FACTORIES),
+            "robinhood": set(ROBINHOOD_DEX_FACTORIES),
+        }
     )
     quote_tokens: dict[str, set[str]] = field(
         default_factory=lambda: {"base": set(BASE_QUOTES), "robinhood": set(ROBINHOOD_QUOTES)}
@@ -128,7 +137,7 @@ class ScannerConfig:
         raw_dex_factories = _json_map("SCANNER_DEX_FACTORIES_JSON")
         dex_factories: dict[str, set[str]] = {
             "base": set(BASE_DEX_FACTORIES),
-            "robinhood": set(),
+            "robinhood": set(ROBINHOOD_DEX_FACTORIES),
         }
         for chain, addresses in raw_dex_factories.items():
             if isinstance(addresses, list):
@@ -172,10 +181,13 @@ class ScannerConfig:
             rpc_max_block_span=_int("SCANNER_RPC_MAX_BLOCK_SPAN", 1_800),
             http_timeout_seconds=_int("SCANNER_HTTP_TIMEOUT_SECONDS", 12),
             dex_concurrency=_int("SCANNER_DEX_CONCURRENCY", 6),
-            security_check_min_score=_float("SCANNER_SECURITY_CHECK_MIN_SCORE", 55.0),
+            security_check_min_score=_float("SCANNER_SECURITY_CHECK_MIN_SCORE", 45.0),
             security_cache_minutes=max(15, _int("SCANNER_SECURITY_CACHE_MINUTES", 30)),
             max_security_checks_per_cycle=max(1, _int("SCANNER_MAX_SECURITY_CHECKS", 12)),
-            max_flow_checks_per_cycle=max(1, _int("SCANNER_MAX_FLOW_CHECKS", 8)),
+            max_flow_checks_per_cycle=max(1, _int("SCANNER_MAX_FLOW_CHECKS", 12)),
+            max_robinhood_market_checks_per_cycle=max(
+                1, _int("SCANNER_MAX_ROBINHOOD_MARKET_CHECKS", 18)
+            ),
             flow_5m_blocks=max(20, _int("SCANNER_FLOW_5M_BLOCKS", 150)),
             flow_15m_blocks=max(60, _int("SCANNER_FLOW_15M_BLOCKS", 450)),
             max_flow_transactions=max(10, _int("SCANNER_MAX_FLOW_TRANSACTIONS", 60)),

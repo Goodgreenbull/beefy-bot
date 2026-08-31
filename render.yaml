@@ -34,6 +34,8 @@ services:
       - key: SCANNER_SECURITY_CACHE_MINUTES
         value: "30"
       - key: SCANNER_SECURITY_CHECK_MIN_SCORE
-        value: "55"
+        value: "45"
       - key: SCANNER_MAX_FLOW_CHECKS
-        value: "8"
+        value: "12"
+      - key: SCANNER_MAX_ROBINHOOD_MARKET_CHECKS
+        value: "18"

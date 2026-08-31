@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from collections import deque
 from datetime import datetime, timezone
 from typing import Awaitable, Callable
 
@@ -18,6 +19,9 @@ from .feeds import (
     FlaunchFeed,
     GeckoTerminalNewPoolsFeed,
     OnchainFlowEnricher,
+    PonsV1Enricher,
+    PonsV2Enricher,
+    RobinhoodMarketEnricher,
     RpcPairFeed,
     SignalOverlay,
     SmartWalletMonitor,
@@ -48,6 +52,9 @@ class ScannerService:
         self.session: aiohttp.ClientSession | None = None
         self.lock = asyncio.Lock()
         self.enricher = DexScreenerEnricher(config)
+        self.robinhood_market_enricher = RobinhoodMarketEnricher(config)
+        self.pons_v1_enricher = PonsV1Enricher(config)
+        self.pons_v2_enricher = PonsV2Enricher(config)
         self.risk_enricher = TokenRiskEnricher(config)
         self.flow_enricher = OnchainFlowEnricher(config)
         self.scorer = SignalScorer(config)
@@ -112,15 +119,139 @@ class ScannerService:
             return []
 
     async def _enrich(
-        self, candidate: Candidate
+        self, candidate: Candidate, allow_robinhood_fallback: bool = False
     ) -> tuple[Candidate, MarketSnapshot | None, bool]:
         assert self.session is not None
+        if "pons-v1" in set(candidate.source.split(",")):
+            try:
+                snapshot = await self.pons_v1_enricher.enrich(self.session, candidate)
+                if snapshot is not None:
+                    self.state.mark_feed_success("pons-v1-market", 1)
+                    return candidate, snapshot, True
+            except Exception as error:
+                self.state.mark_feed_error("pons-v1-market", error)
+        if "pons-v2" in set(candidate.source.split(",")):
+            try:
+                snapshot = await self.pons_v2_enricher.enrich(self.session, candidate)
+                if snapshot is not None:
+                    self.state.mark_feed_success("pons-v2-market", 1)
+                    return candidate, snapshot, True
+            except Exception as error:
+                self.state.mark_feed_error("pons-v2-market", error)
         try:
             snapshot = await self.enricher.enrich(self.session, candidate)
-            return candidate, snapshot, True
+            if snapshot is not None:
+                return candidate, snapshot, True
         except Exception as error:
             self.state.mark_feed_error("dexscreener", error)
-            return candidate, None, False
+        if allow_robinhood_fallback:
+            try:
+                snapshot = await self.robinhood_market_enricher.enrich(
+                    self.session, candidate
+                )
+                if snapshot is not None:
+                    self.state.mark_feed_success("hooderscan", 1)
+                    return candidate, snapshot, True
+            except Exception as error:
+                self.state.mark_feed_error("hooderscan", error)
+        return candidate, None, True
+
+    def _balanced_active_candidates(self) -> list[Candidate]:
+        limit = self.config.active_candidate_limit
+        pool = self.state.list_active_candidates(
+            self.config.active_max_age_hours, max(limit, limit * 3)
+        )
+        if len(pool) <= limit:
+            return pool
+        reserve = max(1, limit // 3)
+        per_lane_limit = max(4, limit // 6)
+        selected: list[Candidate] = []
+        selected_keys: set[str] = set()
+        lane_counts: dict[str, int] = {}
+
+        def source_lane(candidate: Candidate) -> str:
+            sources = set(candidate.source.split(","))
+            for lane in (
+                "pons-v2",
+                "pons-v1",
+                "bankr",
+                "o1-b20",
+                "o1-robinhood",
+                "o1-robinhood-stocks",
+                "baseline",
+                "clanker",
+                "flaunch",
+            ):
+                if lane in sources:
+                    return lane
+            return candidate.source.split(",")[0]
+
+        for chain in ("base", "robinhood"):
+            lanes: dict[str, list[Candidate]] = {}
+            for candidate in (item for item in pool if item.chain == chain):
+                lanes.setdefault(source_lane(candidate), []).append(candidate)
+            for lane, rows in lanes.items():
+                unseen = deque(item for item in rows if not item.metadata.get("_has_score"))
+                rechecks = deque(item for item in rows if item.metadata.get("_has_score"))
+                interleaved: list[Candidate] = []
+                while unseen or rechecks:
+                    if unseen:
+                        interleaved.append(unseen.popleft())
+                    if rechecks:
+                        interleaved.append(rechecks.popleft())
+                lanes[lane] = interleaved
+            chain_selected = 0
+            while lanes and chain_selected < reserve:
+                for lane in list(lanes):
+                    lane_key = f"{chain}:{lane}"
+                    if lane_counts.get(lane_key, 0) >= per_lane_limit:
+                        del lanes[lane]
+                        continue
+                    candidate = lanes[lane].pop(0)
+                    selected.append(candidate)
+                    selected_keys.add(candidate.key)
+                    lane_counts[lane_key] = lane_counts.get(lane_key, 0) + 1
+                    chain_selected += 1
+                    if not lanes[lane]:
+                        del lanes[lane]
+                    if chain_selected >= reserve:
+                        break
+        remaining_lanes: dict[str, deque[Candidate]] = {}
+        for candidate in pool:
+            if candidate.key not in selected_keys:
+                lane = f"{candidate.chain}:{source_lane(candidate)}"
+                remaining_lanes.setdefault(lane, deque()).append(candidate)
+        while remaining_lanes and len(selected) < limit:
+            for lane in list(remaining_lanes):
+                if lane_counts.get(lane, 0) >= per_lane_limit:
+                    del remaining_lanes[lane]
+                    continue
+                candidate = remaining_lanes[lane].popleft()
+                selected.append(candidate)
+                selected_keys.add(candidate.key)
+                lane_counts[lane] = lane_counts.get(lane, 0) + 1
+                if not remaining_lanes[lane]:
+                    del remaining_lanes[lane]
+                if len(selected) >= limit:
+                    break
+        return selected
+
+    def _robinhood_market_keys(self, candidates: list[Candidate]) -> set[str]:
+        rows = [candidate for candidate in candidates if candidate.chain == "robinhood"]
+        limit = min(self.config.max_robinhood_market_checks_per_cycle, len(rows))
+        if not limit:
+            return set()
+        fresh_count = max(1, limit // 2)
+        chosen = rows[:fresh_count]
+        remaining = rows[fresh_count:]
+        if remaining and len(chosen) < limit:
+            cursor_key = "hooderscan:rotation"
+            offset = _integer(self.state.get_cursor(cursor_key), 0) % len(remaining)
+            rotated = remaining[offset:] + remaining[:offset]
+            take = min(limit - len(chosen), len(rotated))
+            chosen.extend(rotated[:take])
+            self.state.set_cursor(cursor_key, str((offset + take) % len(remaining)))
+        return {candidate.key for candidate in chosen}
 
     @staticmethod
     def _apply_external_signals(
@@ -196,6 +327,12 @@ class ScannerService:
             "deployer_sells_15m",
         ):
             setattr(snapshot, field, _integer(flow.get(field), getattr(snapshot, field)))
+        if snapshot.buys_5m + snapshot.sells_5m == 0:
+            snapshot.buys_5m = _integer(flow.get("buy_events_5m"), 0)
+            snapshot.sells_5m = _integer(flow.get("sell_events_5m"), 0)
+        if snapshot.buys_1h + snapshot.sells_1h == 0:
+            snapshot.buys_1h = _integer(flow.get("buy_events_15m"), 0)
+            snapshot.sells_1h = _integer(flow.get("sell_events_15m"), 0)
         snapshot.flow_checked = bool(flow.get("flow_checked", snapshot.flow_checked))
 
     async def run_cycle(self) -> dict:
@@ -215,9 +352,7 @@ class ScannerService:
                     candidate.metadata["bootstrap_candidate"] = True
                 self.state.upsert_candidate(candidate)
 
-            candidates = self.state.list_active_candidates(
-                self.config.active_max_age_hours, self.config.active_candidate_limit
-            )
+            candidates = self._balanced_active_candidates()
             outcome_candidates = self.state.list_outcome_candidates(self.config.outcome_candidate_limit)
             outcome_keys = {candidate.key for candidate in outcome_candidates}
             candidates = list({candidate.key: candidate for candidate in candidates + outcome_candidates}.values())
@@ -225,7 +360,13 @@ class ScannerService:
             wallet_task = asyncio.create_task(
                 self.smart_wallet_monitor.collect(self.session, self.state, candidates)
             )
-            enriched = await asyncio.gather(*(self._enrich(candidate) for candidate in candidates))
+            robinhood_market_keys = self._robinhood_market_keys(candidates)
+            enriched = await asyncio.gather(
+                *(
+                    self._enrich(candidate, candidate.key in robinhood_market_keys)
+                    for candidate in candidates
+                )
+            )
             try:
                 overlays = await overlay_task
                 self.state.mark_feed_success("signal-overlay", len(overlays))
@@ -247,6 +388,8 @@ class ScannerService:
                 "o1-b20",
                 "o1-robinhood",
                 "o1-robinhood-stocks",
+                "pons-v1",
+                "pons-v2",
                 "pools-fun",
                 "basestonk",
             }
@@ -255,6 +398,8 @@ class ScannerService:
                     (candidate, snapshot)
                     for candidate, snapshot, _ in enriched
                     if snapshot is not None
+                    and not snapshot.flow_checked
+                    and not self.state.blocked_identity_theme(candidate)
                     and len(snapshot.pair_address or candidate.pair_address or "") == 42
                     and snapshot.price_usd
                     and snapshot.liquidity_usd >= self.config.min_liquidity_usd
@@ -375,6 +520,10 @@ class ScannerService:
                                 "clanker",
                                 "baseline",
                                 "o1-b20",
+                                "o1-robinhood",
+                                "o1-robinhood-stocks",
+                                "pons-v1",
+                                "pons-v2",
                                 "pools-fun",
                                 "basestonk",
                             }
@@ -493,5 +642,6 @@ class ScannerService:
             **self.state.stats(),
             "outcome_report": self.state.outcome_report(),
             "smart_wallet_report": wallet_report,
+            "near_misses": self.state.near_misses(),
             "feeds": self.state.health(),
         }

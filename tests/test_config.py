@@ -16,6 +16,10 @@ class ScannerConfigTests(unittest.TestCase):
         self.assertEqual(config.max_alerts_per_cycle, 3)
         self.assertEqual(config.warmup_cycles, 1)
         self.assertEqual(config.token_realert_hours, 24)
+        self.assertEqual(config.security_check_min_score, 45)
+        self.assertEqual(config.max_flow_checks_per_cycle, 12)
+        self.assertEqual(config.max_robinhood_market_checks_per_cycle, 18)
+        self.assertTrue(config.dex_factories["robinhood"])
 
     def test_explicit_signal_chat_wins_without_exposing_credentials(self):
         values = {

@@ -21,18 +21,20 @@ Every external feed is isolated. One failing provider is recorded in `feed_healt
 
 ## Direct discovery
 
-- Bankr: polls its unauthenticated recent-launch endpoint and keeps Base deployments.
+- Bankr: polls its unauthenticated recent-launch endpoint and keeps both Base and Robinhood deployments, including deployer and supplied social links.
 - Flaunch: advances the documented `orderId` cursor and stores it in SQLite.
 - Clanker: polls its public Base token index directly.
 - Baseline: polls its public Base CoinGecko adapter and asset/pair metadata.
 - o1/B20: reads verified production `Launched` events from the Base and Robinhood factories, including Robinhood tokenized-stock launches.
+- pons: reads both factory event formats directly. Current curve launches get on-chain price, real quote liquidity, 5m/15m trade wallets, creator selling, fees, holder concentration and supplied social links; Uniswap V3 launches get direct slot-price and locked-pool liquidity estimates.
 - DexScreener profiles: adds recently profiled Base/Robinhood tokens so non-standard launches are not solely dependent on pool indexing.
 - New pools: polls GeckoTerminal's per-network `new_pools` feed.
-- Base: polls standard V2 `PairCreated` and V3 `PoolCreated` events only from verified Uniswap and Sushi factory addresses. Robinhood's generic factory lane stays disabled until a first-party address is published; its verified o1 factories and public profile/index feeds remain active. Block cursors prevent gaps during normal restarts.
+- Base: polls standard V2 `PairCreated` and V3 `PoolCreated` events only from verified Uniswap and Sushi factory addresses.
+- Robinhood: polls the officially documented pons Uniswap V3 and pools.fun Sushi V3 factories, selecting the non-WETH/USDG side. It also uses HooderScan's no-key cached market endpoint for a rotating maximum of 18 candidates per cycle when direct pricing and DexScreener are unavailable. Block cursors prevent gaps during normal restarts.
 
 Pools.fun is covered at the documented Sushi V3 pool-creation layer. The official Pools.fun contracts page does not currently publish its PartyFactory address. Likewise, the scanner does not ship a scraped BaseStonk factory address as if it were authoritative. `SCANNER_FACTORY_FEEDS_JSON` provides direct event ingestion as soon as a current factory/event is verified from a first-party source.
 
-Robinhood Chain is therefore discoverable even when a market-data indexer has not added a named Robinhood network. A new pair is kept in state until DexScreener or an optional overlay can supply enough market data to score it. For a production Robinhood deployment, add known quote-token addresses to `SCANNER_QUOTE_TOKENS_JSON` so the non-quote side is selected reliably.
+Robinhood Chain is therefore discoverable even when a market-data indexer has not added a named Robinhood network. The default quote-token set contains the documented Robinhood WETH and USDG addresses. A new pair remains in state and is rechecked until direct RPC, DexScreener, HooderScan, or an optional overlay supplies enough evidence to score it.
 
 ## State and deduplication
 
@@ -66,7 +68,7 @@ The 0–100 score is inspectable and gives the largest weights to change happeni
 
 The anti-late gate penalizes anything already above 2x from its measured local base, vertical blow-offs, extended hourly moves, sell dominance, post-peak distribution and fading flow. High churn without buyer/holder growth, many transactions from very few unique wallets, unidentifiable or poor-history deployers, deployer selling, fake associations, duplicate identities and serial launching all reduce or block conviction. The safety gate retains the honeypot, sell restriction, dangerous concentration, tax, unlocked-liquidity and admin-control checks.
 
-Outputs are `MONITOR`, `SCOUT` (60–69 with exactly one stated upgrade trigger), `ACTION` (70–79), `A+` (80+ with at least five independent confirmations including two proven wallets and sellability), or `AVOID LATE`. None places an order. A score alone is insufficient: every alert must independently pass safety, liquidity, inflection and evidence gates.
+Outputs are `MONITOR`, `SCOUT` (60–69 with exactly one stated upgrade trigger), `ACTION` (70–79), `A+` (80+ with at least five independent confirmations including two proven wallets and sellability), or `AVOID LATE`. Verified launch provenance is capped below ACTION and can support SCOUT only when live buyer/holder flow is exceptional and either the independent contract screen or project identity is already present, leaving one critical gate to upgrade. ACTION and A+ require both an independent contract screen and project/social or proven-wallet evidence. None places an order. A score alone is insufficient: every alert must independently pass safety, liquidity, inflection and evidence gates.
 
 Telegram converts eligible outputs into one compact verdict line. Only after a token passes the independent quality, safety, and anti-late gates, its uncapped upside model combines valuation, liquidity depth, buyer share, volume, smart-wallet support, social evidence, stage, and short-term extension. Once five comparable completed calls exist, the structural estimate is blended with their 70th-percentile maximum favourable movement, preferring accurate 24-hour outcomes and falling back to six-hour outcomes. This lets genuinely supported 10x+ cases appear without allowing a large theoretical number to rescue a weak or unsafe token. The figure is measured from the alert price and is not a guaranteed return.
 

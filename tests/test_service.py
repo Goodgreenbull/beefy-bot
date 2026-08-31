@@ -1,4 +1,5 @@
 import unittest
+from datetime import datetime, timedelta, timezone
 
 from scanner.config import ScannerConfig
 from scanner.models import Candidate, MarketSnapshot
@@ -63,6 +64,48 @@ class FakeEnricher:
 
 
 class ScannerServiceTests(unittest.IsolatedAsyncioTestCase):
+    async def test_active_selection_reserves_chain_and_platform_lanes(self):
+        state = SQLiteState(":memory:")
+        config = ScannerConfig(active_candidate_limit=12)
+        service = ScannerService(config, state)
+        now = datetime.now(timezone.utc)
+        candidates = []
+        for index in range(30):
+            if index < 15:
+                chain, source = "base", "rpc-pairs:base:v2"
+            elif index < 25:
+                chain, source = "robinhood", "bankr"
+            else:
+                chain, source = "robinhood", "pons-v2"
+            candidate = Candidate(
+                    chain=chain,
+                    token_address=f"0x{index + 100:040x}",
+                    source=source,
+                    discovered_at=now - timedelta(seconds=index),
+                )
+            candidates.append(candidate)
+            state.upsert_candidate(candidate)
+        for candidate in candidates[-2:]:
+            state.update_score(
+                candidate.key,
+                service.scorer.score(
+                    candidate,
+                    MarketSnapshot(chain="robinhood", token_address=candidate.token_address),
+                    [],
+                ),
+            )
+        try:
+            selected = service._balanced_active_candidates()
+        finally:
+            state.close()
+        self.assertEqual(len(selected), 12)
+        self.assertGreaterEqual(sum(item.chain == "base" for item in selected), 4)
+        self.assertGreaterEqual(sum(item.chain == "robinhood" for item in selected), 4)
+        self.assertTrue(any("pons-v2" in item.source for item in selected))
+        self.assertTrue(
+            any("pons-v2" in item.source and item.metadata.get("_has_score") for item in selected)
+        )
+
     async def test_cycle_scores_alerts_and_deduplicates_without_trading(self):
         state = SQLiteState(":memory:")
         config = ScannerConfig(active_candidate_limit=5, min_alert_score=60, warmup_cycles=0)

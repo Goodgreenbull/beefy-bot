@@ -51,6 +51,7 @@ class SQLiteState:
                 last_score REAL,
                 last_stage TEXT,
                 last_signal TEXT,
+                last_result_json TEXT NOT NULL DEFAULT '{}',
                 first_detected_market_cap_usd REAL,
                 first_detected_market_at TEXT
             );
@@ -207,6 +208,7 @@ class SQLiteState:
         self._ensure_column("alerts", "entry_liquidity_usd", "REAL")
         self._ensure_column("candidates", "first_detected_market_cap_usd", "REAL")
         self._ensure_column("candidates", "first_detected_market_at", "TEXT")
+        self._ensure_column("candidates", "last_result_json", "TEXT NOT NULL DEFAULT '{}'")
         for column, declaration in (
             ("unique_buyers_5m", "INTEGER NOT NULL DEFAULT 0"),
             ("unique_buyers_15m", "INTEGER NOT NULL DEFAULT 0"),
@@ -294,6 +296,7 @@ class SQLiteState:
         metadata = json.loads(row["metadata_json"] or "{}")
         metadata["first_detected_market_cap_usd"] = row["first_detected_market_cap_usd"]
         metadata["first_detected_market_at"] = row["first_detected_market_at"]
+        metadata["_has_score"] = row["last_score"] is not None
         return Candidate(
             chain=row["chain"],
             token_address=row["token_address"],
@@ -554,6 +557,27 @@ class SQLiteState:
         translation = str.maketrans({"0": "o", "1": "i", "3": "e", "4": "a", "5": "s", "7": "t"})
         return re.sub(r"[^a-z]", "", (value or "").lower().translate(translation))
 
+    @staticmethod
+    def blocked_identity_theme(candidate: Candidate) -> str | None:
+        """Block recurring impersonation themes the operator has rejected."""
+        name = re.sub(r"[^a-z0-9]+", " ", (candidate.name or "").lower()).strip()
+        symbol = re.sub(r"[^a-z0-9]+", "", (candidate.symbol or "").lower())
+        compact = (name + symbol).replace(" ", "")
+        if "spacex" in compact or re.search(r"\bspace\s+x\b", name):
+            return "blocked SpaceX impersonation theme"
+        if (
+            re.search(r"\b(?:usd|usdc|usdt|stable\s*coin|stablecoin|us\s*dollar)\b", name)
+            or symbol in {"usd", "usdc", "usdt", "busd", "usde", "usds"}
+            or symbol.startswith("usd")
+        ):
+            return "blocked USD/stablecoin impersonation theme"
+        if (
+            re.search(r"\b(?:us\s*oil|crude\s*oil|west\s*texas\s*intermediate)\b", name)
+            or symbol in {"oil", "usoil", "wti", "crude"}
+        ):
+            return "blocked US-oil/commodity impersonation theme"
+        return None
+
     def identity_risk(self, candidate: Candidate, lookback_days: int = 7) -> dict[str, Any]:
         name = self._normalise_identity(candidate.name)
         symbol = self._normalise_identity(candidate.symbol)
@@ -582,6 +606,7 @@ class SQLiteState:
             exact_name += int(same_name)
             exact_symbol += int(same_symbol)
             exact_both += int(same_name and same_symbol)
+        blocked_theme = self.blocked_identity_theme(candidate)
         penalty = 4.0 if missing_identity else min(
             24.0,
             exact_both * 12.0
@@ -599,9 +624,13 @@ class SQLiteState:
                     (cutoff, candidate.key, candidate.deployer),
                 ).fetchone()[0]
             )
-            if serial_launches >= 3:
-                penalty += min(15.0, 3.0 + (serial_launches - 3) * 2.0)
+        if serial_launches >= 3:
+            penalty += min(15.0, 3.0 + (serial_launches - 3) * 2.0)
+        if blocked_theme:
+            penalty += 60.0
         reasons: list[str] = []
+        if blocked_theme:
+            reasons.append(blocked_theme)
         if missing_identity:
             reasons.append("missing token identity")
         elif exact_both:
@@ -618,6 +647,7 @@ class SQLiteState:
             "matches": max(exact_name, exact_symbol),
             "exact_both": exact_both,
             "serial_deployer_launches": serial_launches,
+            "blocked_theme": blocked_theme,
         }
 
     def deployer_reputation(self, candidate: Candidate) -> dict[str, Any]:
@@ -668,10 +698,48 @@ class SQLiteState:
 
     def update_score(self, candidate_key: str, result: ScoreResult) -> None:
         self.connection.execute(
-            "UPDATE candidates SET last_score = ?, last_stage = ?, last_signal = ? WHERE candidate_key = ?",
-            (result.score, result.stage, result.signal, candidate_key),
+            """
+            UPDATE candidates SET
+                last_score = ?, last_stage = ?, last_signal = ?, last_result_json = ?
+            WHERE candidate_key = ?
+            """,
+            (
+                result.score,
+                result.stage,
+                result.signal,
+                json.dumps(result.to_dict(), separators=(",", ":")),
+                candidate_key,
+            ),
         )
         self.connection.commit()
+
+    def near_misses(self, limit: int = 3, minimum_score: float = 40.0) -> list[dict[str, Any]]:
+        rows = self.connection.execute(
+            """
+            SELECT candidate_key, chain, name, symbol, source, last_score,
+                   last_signal, last_result_json
+            FROM candidates
+            WHERE last_score >= ? AND COALESCE(last_signal, 'MONITOR') = 'MONITOR'
+            ORDER BY last_score DESC, last_seen_at DESC
+            LIMIT ?
+            """,
+            (minimum_score, limit),
+        ).fetchall()
+        result: list[dict[str, Any]] = []
+        for row in rows:
+            payload = json.loads(row["last_result_json"] or "{}")
+            result.append(
+                {
+                    "candidate_key": row["candidate_key"],
+                    "chain": row["chain"],
+                    "name": row["name"],
+                    "symbol": row["symbol"],
+                    "source": row["source"],
+                    "score": float(row["last_score"]),
+                    "blockers": list(payload.get("blockers") or [])[:3],
+                }
+            )
+        return result
 
     def alert_allowed(
         self,

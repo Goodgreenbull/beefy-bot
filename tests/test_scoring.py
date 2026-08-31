@@ -241,3 +241,76 @@ class SignalScorerTests(unittest.TestCase):
         candidate = Candidate(chain="base", token_address=TOKEN, source="bankr", launch_at=NOW)
         result = self.scorer.score(candidate, snapshot(smart_wallet_buys=1), [], now=NOW)
         self.assertNotEqual(result.signal, "A+")
+
+    def test_verified_social_launch_with_exceptional_flow_can_emit_narrow_scout(self):
+        candidate = Candidate(
+            chain="robinhood",
+            token_address=TOKEN,
+            source="bankr",
+            launch_at=NOW - timedelta(minutes=5),
+            deployer="0x2222222222222222222222222222222222222222",
+            metadata={"verified_platform_api": True},
+        )
+        market = snapshot(
+            chain="robinhood",
+            social_links=2,
+            smart_wallet_buys=0,
+            exact_ca_mentions_5m=0,
+            exact_ca_mentions_15m=0,
+            credible_social_mentions_5m=0,
+            creator_reputation=0,
+            narrative_score=0,
+            raw={},
+            buys_5m=18,
+            sells_5m=2,
+            unique_buyers_5m=12,
+            unique_buyers_15m=16,
+            net_new_wallets_5m=10,
+            net_new_wallets_15m=13,
+            liquidity_usd=15_000,
+        )
+        result = self.scorer.score(candidate, market, [], now=NOW)
+        self.assertTrue(result.eligible)
+        self.assertEqual(result.signal, "SCOUT")
+        self.assertGreaterEqual(result.score, 60)
+        self.assertLess(result.score, 70)
+        self.assertIn("independent contract screen", result.upgrade_trigger)
+
+    def test_provenance_alone_is_not_a_scout_when_two_upgrade_gates_are_missing(self):
+        candidate = Candidate(
+            chain="robinhood",
+            token_address=TOKEN,
+            source="bankr",
+            launch_at=NOW,
+            deployer="0x2222222222222222222222222222222222222222",
+            metadata={"verified_platform_api": True},
+        )
+        market = snapshot(
+            chain="robinhood",
+            social_links=0,
+            smart_wallet_buys=0,
+            exact_ca_mentions_5m=0,
+            exact_ca_mentions_15m=0,
+            credible_social_mentions_5m=0,
+            creator_reputation=0,
+            narrative_score=0,
+            raw={},
+        )
+        result = self.scorer.score(candidate, market, [], now=NOW)
+        self.assertFalse(result.eligible)
+        self.assertEqual(result.signal, "MONITOR")
+
+    def test_platform_provenance_cannot_become_action_without_contract_screen(self):
+        candidate = Candidate(
+            chain="robinhood",
+            token_address=TOKEN,
+            source="pons-v1",
+            launch_at=NOW,
+            deployer="0x2222222222222222222222222222222222222222",
+            metadata={"verified_platform_event": True, "platform_terms_verified": True},
+        )
+        result = self.scorer.score(
+            candidate, snapshot(chain="robinhood", raw={}), [], now=NOW
+        )
+        self.assertNotIn(result.signal, {"ACTION", "A+"})
+        self.assertLess(result.score, 70)

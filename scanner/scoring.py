@@ -20,7 +20,8 @@ class SignalScorer:
 
     VERIFIED_SOURCES = {
         "bankr", "flaunch", "clanker", "baseline", "o1-b20",
-        "o1-robinhood", "o1-robinhood-stocks", "pools-fun", "basestonk",
+        "o1-robinhood", "o1-robinhood-stocks", "pons-v1", "pons-v2",
+        "pools-fun", "basestonk",
     }
 
     def __init__(self, config: ScannerConfig) -> None:
@@ -84,6 +85,14 @@ class SignalScorer:
         exact_ca_acceleration = _ratio(snapshot.exact_ca_mentions_5m, older_mentions / 2.0)
         source_names = set(candidate.source.split(","))
         trusted_launch = bool(source_names & self.VERIFIED_SOURCES)
+        platform_provenance = bool(
+            trusted_launch
+            and (
+                candidate.metadata.get("verified_platform_event")
+                or candidate.metadata.get("verified_platform_api")
+                or candidate.metadata.get("platform_terms_verified")
+            )
+        )
         security = snapshot.raw.get("security") if isinstance(snapshot.raw, dict) else None
         security = security if isinstance(security, dict) else {}
         identity = candidate.metadata.get("identity_risk")
@@ -174,6 +183,8 @@ class SignalScorer:
             blockers.append(str(identity.get("reason") or "copycat identity overlap"))
             if risk_penalty >= 20:
                 hard_risk = True
+        if identity.get("blocked_theme"):
+            hard_risk = True
         if not candidate.deployer:
             blockers.append("creator/deployer not identified")
             risk_penalty += 4.0
@@ -225,11 +236,20 @@ class SignalScorer:
                 blockers.append("volume and price are fading")
                 anti_late_penalty += 20.0
 
-        safety_complete = bool(security.get("admin_checks_complete")) and (
-            candidate.chain != "base" or bool(security.get("simulation_checked")) or trusted_launch
-        )
+        contract_screen_complete = bool(security.get("admin_checks_complete"))
+        safety_complete = (
+            contract_screen_complete
+            and (
+                candidate.chain != "base"
+                or bool(security.get("simulation_checked"))
+                or trusted_launch
+            )
+        ) or platform_provenance
         if not security.get("checked"):
-            blockers.append("contract safety not confirmed yet")
+            blockers.append(
+                "platform provenance only; independent contract screen pending"
+                if platform_provenance else "contract safety not confirmed yet"
+            )
         else:
             if not safety_complete:
                 blockers.append("contract safety response incomplete")
@@ -308,23 +328,41 @@ class SignalScorer:
             risk_penalty += 12.0
 
         final_score = round(_clamp(sum(components.values()) - anti_late_penalty - risk_penalty), 1)
+        if platform_provenance and not contract_screen_complete:
+            # A verified launch source is enough for a tightly-scoped SCOUT, but
+            # never let provenance substitute for the independent ACTION screen.
+            final_score = min(final_score, max(0.0, action_score - 0.1))
         hard_late = anti_late_penalty >= 35.0
         has_price = snapshot.price_usd is not None and snapshot.price_usd > 0
         if not has_price:
             blockers.append("reliable USD price unavailable")
         basic_quality = has_price and snapshot.liquidity_usd >= self.config.min_liquidity_usd and txns_5m >= 6
-        project_evidence = bool(
-            snapshot.social_links >= 1 or snapshot.exact_ca_mentions_5m >= 1
+        action_project_evidence = bool(
+            snapshot.social_links >= 2 or snapshot.exact_ca_mentions_5m >= 1
             or snapshot.smart_wallet_buys >= 1 or creator_or_narrative
         )
+        project_evidence = action_project_evidence or bool(
+            platform_provenance and candidate.deployer
+        )
+        if project_evidence and not action_project_evidence:
+            risk_penalty += 4.0
+            final_score = round(_clamp(final_score - 4.0), 1)
+            blockers.append("launchpad provenance only; independent project identity is still thin")
         if not project_evidence:
             blockers.append("no project/social or proven smart-wallet evidence")
         inflection_confirmed = buyer_inflecting or holder_inflecting or dipped_and_absorbed
         if not inflection_confirmed:
             blockers.append("buyer/holder inflection not confirmed yet")
 
+        missing_upgrade_gates = int(not contract_screen_complete) + int(
+            not action_project_evidence
+        )
         upgrade_trigger: str | None = None
-        if snapshot.smart_wallet_buys == 1 and snapshot.smart_wallet_sells == 0:
+        if not contract_screen_complete:
+            upgrade_trigger = "the independent contract screen confirms no dangerous admin controls"
+        elif not action_project_evidence:
+            upgrade_trigger = "a verified product/social profile or credible exact-CA mention appears"
+        elif snapshot.smart_wallet_buys == 1 and snapshot.smart_wallet_sells == 0:
             upgrade_trigger = "a second proven smart/KOL wallet enters without a smart-wallet sell"
         elif not snapshot.flow_checked or snapshot.unique_buyers_5m < 5:
             upgrade_trigger = "5m unique buyers reach 5 while buy share remains at least 60%"
@@ -338,7 +376,10 @@ class SignalScorer:
             upgrade_trigger = "the free sell simulation confirms clean sellability with tax below 5%"
 
         common_gate = basic_quality and project_evidence and safety_complete and not hard_late and not hard_risk
-        action_eligible = common_gate and final_score >= action_score and inflection_confirmed and independent_signals >= 3
+        action_eligible = (
+            common_gate and contract_screen_complete and action_project_evidence
+            and final_score >= action_score and inflection_confirmed and independent_signals >= 3
+        )
         a_plus_quality = (
             action_eligible and final_score >= a_plus_score and independent_signals >= 5
             and sellable_20_proxy and smart_confirmed
@@ -347,7 +388,8 @@ class SignalScorer:
         )
         scout_eligible = (
             common_gate and scout_score <= final_score < action_score
-            and independent_signals >= 2 and upgrade_trigger is not None
+            and independent_signals >= 2 and missing_upgrade_gates <= 1
+            and upgrade_trigger is not None
         )
         eligible = a_plus_quality or action_eligible or scout_eligible
 

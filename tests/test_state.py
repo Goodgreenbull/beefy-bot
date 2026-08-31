@@ -73,6 +73,36 @@ class SQLiteStateTests(unittest.TestCase):
         self.assertEqual(self.state.get_cursor("feed"), "42")
         self.assertEqual(self.state.health()[0]["items_seen"], 3)
 
+    def test_operator_rejected_spacex_usd_and_oil_themes_are_hard_blocked(self):
+        rows = [
+            Candidate(chain="base", token_address=f"0x{index + 300:040x}", source="bankr", name=name, symbol=symbol)
+            for index, (name, symbol) in enumerate(
+                (("Space X Official", "SPACEX"), ("United States Dollar", "USD"), ("US Crude Oil", "WTI"))
+            )
+        ]
+        for candidate in rows:
+            risk = self.state.identity_risk(candidate)
+            self.assertTrue(risk["blocked_theme"])
+            self.assertGreaterEqual(risk["copycat_penalty"], 60)
+
+    def test_near_misses_persist_the_real_quality_blocker(self):
+        result = ScoreResult(
+            64,
+            "IGNITION",
+            "MONITOR",
+            False,
+            0,
+            {"buyer_velocity": 12},
+            ["buyer velocity"],
+            ["contract safety not confirmed yet"],
+            "test",
+        )
+        self.state.update_score(self.candidate.key, result)
+        rows = self.state.near_misses()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["score"], 64)
+        self.assertEqual(rows[0]["blockers"][0], "contract safety not confirmed yet")
+
     def test_alert_outcomes_track_all_horizons_mfe_mae_and_wallet_reputation(self):
         score = ScoreResult(84, "IGNITION", "STRONG WATCH", True, 0, {}, [], [], "test")
         entry = MarketSnapshot(

@@ -10,11 +10,11 @@ The previous alpha job sampled promoted/trending tokens and compared 24-hour vol
 
 The quality-v2 free profile scans every five minutes and separates the job into:
 
-1. Direct discovery from Bankr, Flaunch, Clanker, Baseline, verified o1/B20 factory events, GeckoTerminal, DexScreener profiles, and allowlisted V2/V3 factory events.
+1. Direct discovery from Bankr on Base and Robinhood, Flaunch, Clanker, Baseline, verified o1/B20 and pons factory events, GeckoTerminal, DexScreener profiles, and allowlisted V2/V3 factory events including Robinhood Uniswap/Sushi.
 2. SQLite state for candidates, rolling market snapshots, feed cursors, scores, feed health, alert outcomes, and deduplication while the free instance remains alive.
-3. DexScreener enrichment plus free GoPlus and Honeypot.is contract screening.
+3. DexScreener enrichment plus direct on-chain pons pricing/flow, a rate-limited HooderScan Robinhood fallback, and free GoPlus/Honeypot.is contract screening.
 4. Direct on-chain Transfer-log enrichment for distinct 5m/15m buyers and sellers, net-new-wallet velocity, pool-confirmed smart-wallet entries/exits, and deployer selling.
-5. Transparent inflection scoring with anti-late, local-base extension, bot/wash-flow, identity-copy, serial-deployer, concentration, tax, honeypot, and dangerous-admin filters. Large volume alone earns no conviction.
+5. Transparent inflection scoring with anti-late, local-base extension, bot/wash-flow, identity-copy, serial-deployer, concentration, tax, honeypot, and dangerous-admin filters. SpaceX, USD/stablecoin and US-oil impersonation themes are hard-blocked. Large volume alone earns no conviction.
 6. Concise Telegram SCOUT/ACTION/A+ verdicts with an uncapped, evidence-led upside model, exact upgrade trigger for every SCOUT, measured evidence, first-detected versus alert market cap, sellability proxy and invalidation. The target is calculated only after the independent quality and safety gate.
 7. Every alert is re-sampled after 15 minutes, one hour, six hours, and 24 hours. Beefy records first-detected MC, actual alert MC, current MC and peak-after-alert MC separately alongside return, observed maximum favourable excursion (MFE), and observed maximum adverse excursion (MAE).
 
@@ -55,7 +55,7 @@ Render sleeps a free web service after 15 minutes without inbound traffic. This 
 - Beefy Bot calls its own public `/health` endpoint every ten minutes.
 - `.github/workflows/keep-render-awake.yml` calls the same endpoint every ten minutes from GitHub Actions. The repository is public, so standard GitHub-hosted Actions are free. Scheduled workflows only begin after this workflow is on the default branch.
 
-The scanner defaults to a five-minute cadence, enriches at most 50 active candidates plus 50 alerted tokens awaiting outcomes, measures on-chain wallet flow for the eight highest-priority candidates, runs at most 12 new contract checks per cycle, and sends at most three alerts per cycle. Direct launches and fresh exact-CA/creator evidence receive the first flow-check slots. Outcome candidates are ordered by their next due measurement so an older alert is not starved by newer ones.
+The scanner defaults to a five-minute cadence, enriches at most 50 active candidates plus 50 alerted tokens awaiting outcomes, measures on-chain wallet flow for the 12 highest-priority candidates, runs at most 12 new contract checks per cycle, checks at most 18 Robinhood markets through the free fallback, and sends at most three alerts per cycle. Candidate selection reserves capacity for both chains, alternates fresh discoveries with maturing rechecks, and round-robins direct platform lanes so a burst from one launcher cannot hide the others. Outcome candidates are ordered by their next due measurement so an older alert is not starved by newer ones.
 
 Render can still restart a free service at any time and its local filesystem is ephemeral. On a fresh state database, Beefy Bot rebuilds candidates from the direct feeds and a 1,800-block RPC lookback and marks that backlog as a bootstrap cohort. Those contracts cannot produce recycled new-launch alerts; they become eligible only after a later measured reawakening. Genuinely new discoveries after startup alert normally. This is a recovery strategy rather than permanent storage, but it avoids introducing a paid database.
 
@@ -65,7 +65,7 @@ No wallet key is needed or wanted.
 
 Admin-only Telegram commands:
 
-- `/scannerstatus` — last cycle, 24-hour candidates/snapshots/alerts, and feed health.
+- `/scannerstatus` — last cycle, 24-hour candidates/snapshots/alerts, feed health, and the best current near-misses with their real blocking reason.
 - `/signalstats` — 15m/1h/6h/24h sample counts, SCOUT/ACTION/A+ results, MFE/MAE, fixed tiers, latest first/alert/current/peak MC audit, and wallet-cohort progress.
 - `/scannow` — run one cycle immediately.
 - `/alerttest` — send a clearly labelled test message to the configured signal destination.
@@ -82,7 +82,7 @@ Beefy also records the transaction senders buying an alerted token from its pool
 
 ### Additional launch factories
 
-The repository contains verified first-party o1/B20 production factories. Pools.fun launches also enter through its documented Sushi V3 pool layer. Baseline and Clanker use their public first-party feeds.
+The repository contains verified first-party o1/B20 production factories and direct pons event parsing. Current pons curve launches are priced and measured directly from public Robinhood RPC state instead of waiting for an indexer; its Uniswap V3 launches have a direct on-chain price/liquidity fallback. Bankr's public recent-launch feed now keeps Robinhood as well as Base. Pools.fun launches enter through its documented Sushi V3 pool layer. Baseline and Clanker use their public first-party feeds.
 
 For a launcher whose first-party factory is not published or cannot yet be verified, `SCANNER_FACTORY_FEEDS_JSON` accepts a platform name, factory address, event topic, and indexed-field positions. This is the safe path for a current BaseStonk/Stonks or future Pools.fun factory once its official address is published; the repository deliberately does not hard-code scraped or stale addresses.
 

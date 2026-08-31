@@ -19,6 +19,11 @@ PAIR_CREATED_TOPIC = "0x0d3648bd0f6ba80134a33ba9275ac585d9d315f0ad8355cddefde31a
 POOL_CREATED_TOPIC = "0x783cca1c0412dd0d695e784568c96da2e9c22ff989357a2e8b1d9b2b4e6b7118"
 TRANSFER_TOPIC = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"
 O1_LAUNCHED_TOPIC = "0x207384e895174175cc774fe7f7457b37c382f27ebf53d37d5257b862f80eaf9c"
+PONS_V1_LAUNCHED_TOPIC = "0xdb51ea9ad51ab453a65a4cb7e60c3cb378c9501bb002609f8f97778fb6c4235a"
+PONS_V2_LAUNCHED_TOPIC = "0x8d4aad4953d0ca700d468f3753aa14432d1b35b43ec6409f051fb6aa43a89607"
+PONS_V2_BUY_TOPIC = "0xec36bf571f136799e8dc0b0b8bea4b04d8bd3d43de838aab0d5fc21d4cbfc455"
+PONS_V2_SELL_TOPIC = "0x8113d738abdcb6b38357e9d53a54a7157861a09031b453651f0fe7fe151f59df"
+ROBINHOOD_V4_POOL_MANAGER = "0x8366a39cc670b4001a1121b8f6a443a643e40951"
 
 O1_FACTORIES = {
     "base": {
@@ -86,6 +91,26 @@ def _address_from_word(word: str | None) -> str:
     return normalise_address("0x" + word[-40:]) if len(word) >= 40 else ""
 
 
+def _abi_words(value: str | None) -> list[int]:
+    raw = (value or "0x").removeprefix("0x")
+    return [int(raw[index : index + 64], 16) for index in range(0, len(raw), 64) if len(raw[index : index + 64]) == 64]
+
+
+def _decode_abi_string(value: str | None, head_index: int = 0) -> str:
+    try:
+        raw = bytes.fromhex((value or "0x").removeprefix("0x"))
+        head = head_index * 32
+        offset = int.from_bytes(raw[head : head + 32], "big")
+        length = int.from_bytes(raw[offset : offset + 32], "big")
+        return raw[offset + 32 : offset + 32 + length].decode("utf-8", errors="replace").strip()
+    except (ValueError, IndexError):
+        return ""
+
+
+def _decode_abi_strings(value: str | None, count: int) -> list[str]:
+    return [_decode_abi_string(value, index) for index in range(count)]
+
+
 async def _get_json(session: aiohttp.ClientSession, url: str, **kwargs: Any) -> Any:
     async with session.get(url, **kwargs) as response:
         if response.status == 429:
@@ -108,19 +133,33 @@ class BankrLaunchFeed:
         for launch in launches:
             address = launch.get("tokenAddress")
             chain = str(launch.get("chain", "")).lower()
-            if not address or chain != "base" or launch.get("status") not in (None, "deployed"):
+            if not address or chain not in {"base", "robinhood"} or launch.get("status") not in (None, "deployed"):
                 continue
             deployer = launch.get("deployer") or {}
+            social_links = sum(
+                bool(launch.get(field)) for field in ("tweetUrl", "websiteUrl")
+            )
             candidates.append(
                 Candidate(
-                    chain="base",
+                    chain=chain,
                     token_address=address,
+                    pair_address=(
+                        ROBINHOOD_V4_POOL_MANAGER if chain == "robinhood" else None
+                    ),
                     source=self.name,
                     launch_at=_timestamp(launch.get("timestamp") or launch.get("createdAt")),
                     name=launch.get("tokenName"),
                     symbol=launch.get("tokenSymbol"),
                     deployer=deployer.get("walletAddress") if isinstance(deployer, dict) else None,
-                    metadata={"activity_id": launch.get("activityId")},
+                    metadata={
+                        "activity_id": launch.get("activityId"),
+                        "pool_id": launch.get("poolId"),
+                        "launch_type": launch.get("launchType"),
+                        "profile_social_links": social_links,
+                        "tweet_url": launch.get("tweetUrl"),
+                        "website_url": launch.get("websiteUrl"),
+                        "verified_platform_api": True,
+                    },
                 )
             )
         return candidates
@@ -327,6 +366,10 @@ class FactorySpec:
     token_topic_index: int = 1
     creator_topic_index: int | None = 3
     pool_topic_index: int | None = 2
+    pool_data_index: int | None = None
+    quote_data_index: int | None = 0
+    pool_topic_is_address: bool = False
+    platform_terms_verified: bool = False
 
     def __post_init__(self) -> None:
         self.address = normalise_address(self.address)
@@ -417,15 +460,26 @@ class FactoryLaunchFeed:
             if spec.creator_topic_index is not None and len(topics) > spec.creator_topic_index:
                 creator = _address_from_topic(topics[spec.creator_topic_index])
             pool_id = None
+            pair_address = None
             if spec.pool_topic_index is not None and len(topics) > spec.pool_topic_index:
                 pool_id = topics[spec.pool_topic_index]
+                if spec.pool_topic_is_address:
+                    pair_address = _address_from_topic(pool_id)
             words = [log.get("data", "0x")[i : i + 64] for i in range(2, len(log.get("data", "0x")), 64)]
-            quote = _address_from_word(words[0]) if words else None
+            if spec.pool_data_index is not None and len(words) > spec.pool_data_index:
+                pair_address = _address_from_word(words[spec.pool_data_index])
+                pool_id = pair_address
+            quote = (
+                _address_from_word(words[spec.quote_data_index])
+                if spec.quote_data_index is not None and len(words) > spec.quote_data_index
+                else None
+            )
             block_number = int(log.get("blockNumber", "0x0"), 16)
             candidates.append(
                 Candidate(
                     chain=self.chain,
                     token_address=token,
+                    pair_address=pair_address,
                     source=spec.source,
                     launch_at=block_times.get(block_number),
                     deployer=creator,
@@ -436,6 +490,7 @@ class FactoryLaunchFeed:
                         "transaction_hash": log.get("transactionHash"),
                         "block_number": block_number,
                         "verified_platform_event": True,
+                        "platform_terms_verified": spec.platform_terms_verified,
                     },
                 )
             )
@@ -448,6 +503,38 @@ def platform_factory_specs(config: ScannerConfig, chain: str) -> list[FactorySpe
         FactorySpec(source=source, address=address)
         for address, source in O1_FACTORIES.get(chain, {}).items()
     ]
+    if chain == "robinhood":
+        specs.extend(
+            [
+                FactorySpec(
+                    source="pons-v1",
+                    address="0xa5aab3f0c6eeadf30ef1d3eb997108e976351feb",
+                    topic=PONS_V1_LAUNCHED_TOPIC,
+                    creator_topic_index=2,
+                    pool_topic_index=None,
+                    pool_data_index=1,
+                    platform_terms_verified=True,
+                ),
+                FactorySpec(
+                    source="pons-v1",
+                    address="0x0c37a24f5d23a486fa692d1500881d698b1f77a4",
+                    topic=PONS_V1_LAUNCHED_TOPIC,
+                    creator_topic_index=2,
+                    pool_topic_index=None,
+                    pool_data_index=1,
+                    platform_terms_verified=True,
+                ),
+                FactorySpec(
+                    source="pons-v2",
+                    address="0x7ed598bcef8bd9edd8c97a195c6d13f40801ec7e",
+                    topic=PONS_V2_LAUNCHED_TOPIC,
+                    creator_topic_index=3,
+                    pool_topic_index=2,
+                    pool_topic_is_address=True,
+                    platform_terms_verified=True,
+                ),
+            ]
+        )
     rows = config.factory_feeds.get(chain, []) if isinstance(config.factory_feeds, dict) else []
     for row in rows if isinstance(rows, list) else []:
         if not isinstance(row, dict) or not row.get("address") or not row.get("source"):
@@ -467,6 +554,16 @@ def platform_factory_specs(config: ScannerConfig, chain: str) -> list[FactorySpe
                         _integer(row.get("poolTopicIndex"), 2)
                         if row.get("poolTopicIndex", 2) is not None else None
                     ),
+                    pool_data_index=(
+                        _integer(row.get("poolDataIndex"), 0)
+                        if row.get("poolDataIndex") is not None else None
+                    ),
+                    quote_data_index=(
+                        _integer(row.get("quoteDataIndex"), 0)
+                        if row.get("quoteDataIndex", 0) is not None else None
+                    ),
+                    pool_topic_is_address=_truthy(row.get("poolTopicIsAddress")),
+                    platform_terms_verified=_truthy(row.get("platformTermsVerified")),
                 )
             )
         except (TypeError, ValueError):
@@ -713,6 +810,494 @@ class DexScreenerEnricher:
         )
 
 
+class RobinhoodMarketEnricher:
+    """Free no-key fallback for Robinhood markets not yet indexed elsewhere."""
+
+    def __init__(self, config: ScannerConfig) -> None:
+        self.rpc_url = config.robinhood_rpc_url
+        self._semaphore = asyncio.Semaphore(4)
+
+    async def _supply(self, session: aiohttp.ClientSession, token: str) -> float | None:
+        requests = [
+            {
+                "jsonrpc": "2.0",
+                "id": 0,
+                "method": "eth_call",
+                "params": [{"to": token, "data": "0x18160ddd"}, "latest"],
+            },
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "eth_call",
+                "params": [{"to": token, "data": "0x313ce567"}, "latest"],
+            },
+        ]
+        async with session.post(self.rpc_url, json=requests) as response:
+            if response.status >= 400:
+                return None
+            rows = await response.json(content_type=None)
+        results = {
+            int(row.get("id")): row.get("result")
+            for row in rows if isinstance(rows, list) and isinstance(row, dict) and row.get("result")
+        }
+        try:
+            supply = int(results[0], 16)
+            decimals = int(results.get(1, "0x12"), 16)
+            return supply / (10 ** decimals)
+        except (KeyError, TypeError, ValueError, OverflowError):
+            return None
+
+    async def enrich(
+        self, session: aiohttp.ClientSession, candidate: Candidate
+    ) -> MarketSnapshot | None:
+        if candidate.chain != "robinhood":
+            return None
+        url = f"https://hooderscan.com/api/v1/token/{candidate.token_address}"
+        async with self._semaphore:
+            async with session.get(url) as response:
+                if response.status in {404, 503}:
+                    return None
+                if response.status == 429:
+                    raise RuntimeError("rate limited by hooderscan.com")
+                if response.status >= 400:
+                    raise RuntimeError(f"HTTP {response.status} from hooderscan.com")
+                payload = await response.json(content_type=None)
+        data = payload.get("data") if isinstance(payload, dict) else None
+        if (
+            not isinstance(payload, dict)
+            or not payload.get("success")
+            or not isinstance(data, dict)
+            or data.get("isStale")
+        ):
+            return None
+        price = _number(data.get("priceUsd"), 0.0) or None
+        supply = await self._supply(session, candidate.token_address) if price else None
+        market_cap = price * supply if price and supply else None
+        return MarketSnapshot(
+            chain="robinhood",
+            token_address=candidate.token_address,
+            pair_address=candidate.pair_address,
+            price_usd=price,
+            liquidity_usd=_number(data.get("liquidityUsd")),
+            market_cap_usd=market_cap,
+            fdv_usd=market_cap,
+            volume_24h_usd=_number(data.get("volume24hUsd")),
+            price_change_24h=_number(data.get("priceChange24h")),
+            social_links=_integer(candidate.metadata.get("profile_social_links"), 0),
+            source="hooderscan",
+            raw={
+                "name": data.get("name") or candidate.name,
+                "symbol": data.get("symbol") or candidate.symbol,
+                "market_sources": data.get("sources") or [],
+                "market_updated_at": data.get("updatedAt"),
+            },
+        )
+
+
+class PonsV2Enricher:
+    """Read Pons V2 curve price, flow, holders and immutable fee terms on-chain."""
+
+    WETH = "0x0bd7d308f8e1639fab988df18a8011f41eacad73"
+    USDG = "0x5fc5360d0400a0fd4f2af552add042d716f1d168"
+    NATIVE_ETH = "0x0000000000000000000000000000000000000000"
+
+    def __init__(self, config: ScannerConfig) -> None:
+        self.config = config
+        self.rpc_url = config.robinhood_rpc_url
+        self._semaphore = asyncio.Semaphore(1)
+        self._request_lock = asyncio.Lock()
+        self._last_request_at = 0.0
+        self._price_lock = asyncio.Lock()
+        self._eth_price: tuple[float, float] | None = None
+
+    async def _batch_post(
+        self, session: aiohttp.ClientSession, requests: list[dict[str, Any]], label: str
+    ) -> Any:
+        async with self._request_lock:
+            for attempt in range(3):
+                elapsed = asyncio.get_running_loop().time() - self._last_request_at
+                if elapsed < 0.25:
+                    await asyncio.sleep(0.25 - elapsed)
+                async with session.post(self.rpc_url, json=requests) as response:
+                    self._last_request_at = asyncio.get_running_loop().time()
+                    if response.status == 429:
+                        retry_header = getattr(response, "headers", {}).get("Retry-After")
+                        try:
+                            retry_after = float(retry_header)
+                        except (TypeError, ValueError):
+                            retry_after = 0.75 * (2 ** attempt)
+                    elif response.status >= 400:
+                        raise RuntimeError(f"{label} HTTP {response.status}")
+                    else:
+                        return await response.json(content_type=None)
+                await asyncio.sleep(min(3.0, max(0.5, retry_after)))
+        raise RuntimeError(f"{label} HTTP 429 after retries")
+
+    async def _calls(
+        self, session: aiohttp.ClientSession, calls: list[tuple[str, str, str]]
+    ) -> dict[str, str]:
+        requests = [
+            {
+                "jsonrpc": "2.0",
+                "id": index,
+                "method": "eth_call",
+                "params": [{"to": address, "data": selector}, "latest"],
+            }
+            for index, (_, address, selector) in enumerate(calls)
+        ]
+        rows = await self._batch_post(session, requests, "Pons batch RPC")
+        by_id = {
+            int(row.get("id")): row.get("result")
+            for row in rows if isinstance(rows, list) and isinstance(row, dict) and row.get("result")
+        }
+        return {
+            name: by_id[index]
+            for index, (name, _, _) in enumerate(calls)
+            if index in by_id
+        }
+
+    async def _calls_with_latest(
+        self, session: aiohttp.ClientSession, calls: list[tuple[str, str, str]]
+    ) -> tuple[dict[str, str], str]:
+        requests = [
+            {
+                "jsonrpc": "2.0",
+                "id": index,
+                "method": "eth_call",
+                "params": [{"to": address, "data": selector}, "latest"],
+            }
+            for index, (_, address, selector) in enumerate(calls)
+        ]
+        latest_id = len(requests)
+        requests.append(
+            {"jsonrpc": "2.0", "id": latest_id, "method": "eth_blockNumber", "params": []}
+        )
+        rows = await self._batch_post(session, requests, "Pons batch RPC")
+        if not isinstance(rows, list):
+            raise RuntimeError("Pons batch RPC returned an invalid response")
+        errors = [row.get("error", {}).get("message") for row in rows if row.get("error")]
+        if errors:
+            raise RuntimeError(errors[0] or "Pons batch RPC error")
+        by_id = {
+            int(row.get("id")): row.get("result")
+            for row in rows if isinstance(row, dict) and row.get("result")
+        }
+        latest = by_id.get(latest_id)
+        if not latest:
+            raise RuntimeError("Pons latest block unavailable")
+        values = {
+            name: by_id[index]
+            for index, (name, _, _) in enumerate(calls)
+            if index in by_id
+        }
+        return values, latest
+
+    async def _event_logs(
+        self, session: aiohttp.ClientSession, filters: list[dict[str, Any]]
+    ) -> list[list[dict[str, Any]]]:
+        requests = [
+            {
+                "jsonrpc": "2.0",
+                "id": index,
+                "method": "eth_getLogs",
+                "params": [log_filter],
+            }
+            for index, log_filter in enumerate(filters)
+        ]
+        rows = await self._batch_post(session, requests, "Pons log RPC")
+        if not isinstance(rows, list):
+            raise RuntimeError("Pons log RPC returned an invalid response")
+        errors = [row.get("error", {}).get("message") for row in rows if row.get("error")]
+        if errors:
+            raise RuntimeError(errors[0] or "Pons log RPC error")
+        by_id = {
+            int(row.get("id")): row.get("result") or []
+            for row in rows if isinstance(row, dict)
+        }
+        return [by_id.get(index, []) for index in range(len(filters))]
+
+    async def _eth_usd(self, session: aiohttp.ClientSession) -> float:
+        async with self._price_lock:
+            now = datetime.now(timezone.utc).timestamp()
+            if self._eth_price and now - self._eth_price[0] < 60:
+                return self._eth_price[1]
+            payload = await _get_json(
+                session,
+                "https://coins.llama.fi/prices/current/coingecko:ethereum",
+            )
+            price = _number(
+                ((payload.get("coins") or {}).get("coingecko:ethereum") or {}).get("price")
+            )
+            if price <= 0:
+                raise RuntimeError("ETH/USD reference unavailable")
+            self._eth_price = (now, price)
+            return price
+
+    @staticmethod
+    def _event_wallets(rows: list[dict], minimum_block: int) -> set[str]:
+        return {
+            _address_from_topic((row.get("topics") or [None, None])[1])
+            for row in rows
+            if int(str(row.get("blockNumber") or "0x0"), 16) >= minimum_block
+            and len(row.get("topics") or []) > 1
+            and len(_address_from_topic((row.get("topics") or [None, None])[1])) == 42
+        }
+
+    async def enrich(
+        self, session: aiohttp.ClientSession, candidate: Candidate
+    ) -> MarketSnapshot | None:
+        if "pons-v2" not in set(candidate.source.split(",")):
+            return None
+        curve = normalise_address(candidate.pair_address)
+        quote = normalise_address(candidate.metadata.get("quote_token"))
+        if len(curve) != 42 or quote not in {self.NATIVE_ETH, self.WETH, self.USDG}:
+            return None
+
+        async with self._semaphore:
+            initial, eth_usd = await asyncio.gather(
+                self._calls_with_latest(
+                    session,
+                    [
+                        ("reserves", curve, "0x0902f1ac"),
+                        ("real_quote", curve, "0x4f1f58fd"),
+                        ("fee_bps", curve, "0x24a9d853"),
+                        ("creator_tax_bps", curve, "0xc1bb8901"),
+                        ("supply", candidate.token_address, "0x18160ddd"),
+                        ("decimals", candidate.token_address, "0x313ce567"),
+                        ("name", candidate.token_address, "0x06fdde03"),
+                        ("symbol", candidate.token_address, "0x95d89b41"),
+                        ("socials", candidate.token_address, "0x53cd512a"),
+                    ],
+                ),
+                self._eth_usd(session),
+            )
+            values, latest_hex = initial
+            reserve_words = _abi_words(values.get("reserves"))
+            if len(reserve_words) < 2:
+                return None
+            latest = int(latest_hex, 16)
+            launch_block = _integer(candidate.metadata.get("block_number"), latest)
+            start = max(0, launch_block, latest - self.config.rpc_lookback_blocks + 1)
+            log_filter = {
+                "fromBlock": hex(start),
+                "toBlock": hex(latest),
+            }
+            buy_logs, sell_logs, transfer_logs = await self._event_logs(
+                session,
+                [
+                    {**log_filter, "address": curve, "topics": [PONS_V2_BUY_TOPIC]},
+                    {**log_filter, "address": curve, "topics": [PONS_V2_SELL_TOPIC]},
+                    {
+                        **log_filter,
+                        "address": candidate.token_address,
+                        "topics": [TRANSFER_TOPIC],
+                    },
+                ],
+            )
+
+        buys = [row for row in buy_logs or [] if isinstance(row, dict)]
+        sells = [row for row in sell_logs or [] if isinstance(row, dict)]
+        transfers = [row for row in transfer_logs or [] if isinstance(row, dict)]
+        five_start = latest - self.config.flow_5m_blocks + 1
+        fifteen_start = latest - self.config.flow_15m_blocks + 1
+
+        def recent(rows: list[dict], minimum: int) -> list[dict]:
+            return [
+                row for row in rows
+                if int(str(row.get("blockNumber") or "0x0"), 16) >= minimum
+            ]
+
+        buys_5m = recent(buys, five_start)
+        sells_5m = recent(sells, five_start)
+        buys_15m = recent(buys, fifteen_start)
+        sells_15m = recent(sells, fifteen_start)
+
+        def quote_volume(rows: list[dict], word_index: int) -> int:
+            total = 0
+            for row in rows:
+                words = _abi_words(row.get("data"))
+                if len(words) > word_index:
+                    total += words[word_index]
+            return total
+
+        volume_5m_quote = quote_volume(buys_5m, 0) + quote_volume(sells_5m, 1)
+        volume_1h_quote = quote_volume(buys, 0) + quote_volume(sells, 1)
+        buyers_5m = self._event_wallets(buys, five_start)
+        buyers_15m = self._event_wallets(buys, fifteen_start)
+        sellers_5m = self._event_wallets(sells, five_start)
+        sellers_15m = self._event_wallets(sells, fifteen_start)
+
+        supply_raw = (_abi_words(values.get("supply")) or [0])[0]
+        decimals = (_abi_words(values.get("decimals")) or [18])[0]
+        quote_reserve, token_reserve = reserve_words[:2]
+        supply_tokens = supply_raw / (10 ** decimals) if supply_raw else 0.0
+        price_quote = (
+            (quote_reserve / token_reserve) * (10 ** (decimals - 18))
+            if quote_reserve and token_reserve else 0.0
+        )
+        quote_usd = 1.0 if quote == self.USDG else eth_usd
+        price_usd = price_quote * quote_usd
+        real_quote = (_abi_words(values.get("real_quote")) or [0])[0]
+        fee_bps = (_abi_words(values.get("fee_bps")) or [0])[0]
+        creator_tax_bps = (_abi_words(values.get("creator_tax_bps")) or [0])[0]
+
+        balances: dict[str, int] = defaultdict(int)
+        for row in transfers:
+            topics = row.get("topics") or []
+            if len(topics) < 3:
+                continue
+            sender = _address_from_topic(topics[1])
+            recipient = _address_from_topic(topics[2])
+            amount = int(str(row.get("data") or "0x0"), 16)
+            balances[sender] -= amount
+            balances[recipient] += amount
+        excluded = {
+            "0x0000000000000000000000000000000000000000",
+            "0x000000000000000000000000000000000000dead",
+            curve,
+            candidate.token_address,
+            normalise_address(candidate.metadata.get("factory")),
+        }
+        wallet_balances = sorted(
+            (amount for wallet, amount in balances.items() if amount > 0 and wallet not in excluded),
+            reverse=True,
+        )
+        concentration = (
+            sum(wallet_balances[:5]) * 100.0 / supply_raw if supply_raw else None
+        )
+        deployer = normalise_address(candidate.deployer)
+        creator_percent = (
+            max(0, balances.get(deployer, 0)) * 100.0 / supply_raw
+            if supply_raw and len(deployer) == 42 else None
+        )
+        socials = _decode_abi_strings(values.get("socials"), 5)
+        total_tax = (fee_bps + creator_tax_bps) / 100.0
+        security = {
+            "checked": True,
+            # Curve state proves fees, balances and live sell activity, but it
+            # is not a substitute for the independent admin-risk provider.
+            "admin_checks_complete": False,
+            "simulation_checked": False,
+            "sell_simulation_success": False,
+            "providers": ["pons-v2-onchain"],
+            "is_honeypot": False,
+            "cannot_buy": False,
+            "cannot_sell": False,
+            "open_source": True,
+            "buy_tax": total_tax,
+            "sell_tax": total_tax,
+            "creator_percent": creator_percent,
+            "top_unlocked_eoa_percent": concentration,
+            "holder_count": len(wallet_balances),
+            "concentration_checked": True,
+            "platform_template": "pons-v2",
+        }
+        return MarketSnapshot(
+            chain="robinhood",
+            token_address=candidate.token_address,
+            pair_address=curve,
+            price_usd=price_usd or None,
+            liquidity_usd=real_quote / 1e18 * quote_usd,
+            market_cap_usd=price_usd * supply_tokens if price_usd and supply_tokens else None,
+            fdv_usd=price_usd * supply_tokens if price_usd and supply_tokens else None,
+            volume_5m_usd=volume_5m_quote / 1e18 * quote_usd,
+            volume_1h_usd=volume_1h_quote / 1e18 * quote_usd,
+            buys_5m=len(buys_5m),
+            sells_5m=len(sells_5m),
+            buys_1h=len(buys),
+            sells_1h=len(sells),
+            social_links=sum(bool(item) for item in socials),
+            unique_buyers_5m=len(buyers_5m),
+            unique_buyers_15m=len(buyers_15m),
+            unique_sellers_5m=len(sellers_5m),
+            unique_sellers_15m=len(sellers_15m),
+            net_new_wallets_5m=len(buyers_5m - sellers_5m),
+            net_new_wallets_15m=len(buyers_15m - sellers_15m),
+            holder_count=len(wallet_balances),
+            deployer_sells_15m=sum(
+                _address_from_topic((row.get("topics") or [None, None])[1]) == deployer
+                for row in sells_15m if len(row.get("topics") or []) > 1
+            ),
+            flow_checked=True,
+            source="pons-v2-onchain",
+            raw={
+                "name": _decode_abi_string(values.get("name")),
+                "symbol": _decode_abi_string(values.get("symbol")),
+                "security": security,
+                "creator_tax_bps": creator_tax_bps,
+                "protocol_fee_bps": fee_bps,
+                "quote_token": quote,
+                "quote_usd": quote_usd,
+                "socials": [item for item in socials if item],
+            },
+        )
+
+
+class PonsV1Enricher(PonsV2Enricher):
+    """Read current and legacy pons Uniswap V3 launches without an indexer."""
+
+    async def enrich(
+        self, session: aiohttp.ClientSession, candidate: Candidate
+    ) -> MarketSnapshot | None:
+        if "pons-v1" not in set(candidate.source.split(",")):
+            return None
+        pool = normalise_address(candidate.pair_address)
+        quote = normalise_address(candidate.metadata.get("quote_token"))
+        if len(pool) != 42 or quote != self.WETH:
+            return None
+
+        balance_call = "0x70a08231" + pool.removeprefix("0x").rjust(64, "0")
+        async with self._semaphore:
+            values, eth_usd = await asyncio.gather(
+                self._calls(
+                    session,
+                    [
+                        ("slot0", pool, "0x3850c7bd"),
+                        ("quote_balance", self.WETH, balance_call),
+                        ("supply", candidate.token_address, "0x18160ddd"),
+                        ("decimals", candidate.token_address, "0x313ce567"),
+                        ("name", candidate.token_address, "0x06fdde03"),
+                        ("symbol", candidate.token_address, "0x95d89b41"),
+                        ("socials", candidate.token_address, "0x53cd512a"),
+                    ],
+                ),
+                self._eth_usd(session),
+            )
+        slot_words = _abi_words(values.get("slot0"))
+        if not slot_words or slot_words[0] <= 0:
+            return None
+        sqrt_price_x96 = slot_words[0]
+        token1_per_token0 = (sqrt_price_x96 / (2 ** 96)) ** 2
+        token_is_token0 = int(candidate.token_address, 16) < int(self.WETH, 16)
+        price_weth = token1_per_token0 if token_is_token0 else 1.0 / token1_per_token0
+
+        supply_raw = (_abi_words(values.get("supply")) or [0])[0]
+        decimals = (_abi_words(values.get("decimals")) or [18])[0]
+        supply_tokens = supply_raw / (10 ** decimals) if supply_raw else 0.0
+        quote_balance = (_abi_words(values.get("quote_balance")) or [0])[0]
+        price_usd = price_weth * eth_usd
+        socials = _decode_abi_strings(values.get("socials"), 5)
+        market_cap = price_usd * supply_tokens if supply_tokens else None
+        return MarketSnapshot(
+            chain="robinhood",
+            token_address=candidate.token_address,
+            pair_address=pool,
+            price_usd=price_usd or None,
+            liquidity_usd=quote_balance / 1e18 * eth_usd * 2.0,
+            market_cap_usd=market_cap,
+            fdv_usd=market_cap,
+            social_links=sum(bool(item) for item in socials),
+            source="pons-v1-onchain",
+            raw={
+                "name": _decode_abi_string(values.get("name")),
+                "symbol": _decode_abi_string(values.get("symbol")),
+                "socials": [item for item in socials if item],
+                "platform_liquidity_locked": True,
+                "liquidity_estimate": "2x onchain WETH pool balance",
+            },
+        )
+
+
 def snapshot_from_fallback(candidate: Candidate) -> MarketSnapshot | None:
     market = candidate.metadata.get("gecko_market")
     if isinstance(market, dict):
@@ -902,6 +1487,16 @@ class OnchainFlowEnricher:
             "net_new_wallets_5m": len(buyers_5m - sellers_5m),
             "net_new_wallets_15m": len(buyers_15m - sellers_15m),
             "deployer_sells_15m": deployer_sells,
+            "buy_events_5m": sum(
+                int(str(row.get("blockNumber") or "0x0"), 16) >= five_minute_start
+                for row in buy_logs
+            ),
+            "sell_events_5m": sum(
+                int(str(row.get("blockNumber") or "0x0"), 16) >= five_minute_start
+                for row in sell_logs
+            ),
+            "buy_events_15m": len(buy_logs),
+            "sell_events_15m": len(sell_logs),
             "flow_checked": True,
         }
 

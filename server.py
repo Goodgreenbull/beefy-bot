@@ -445,6 +445,18 @@ async def scannerstatus_command(update: Update, context: ContextTypes.DEFAULT_TY
         health_line = f"Needs attention: {', '.join(unhealthy)}\nRun /alerttest to diagnose Telegram delivery."
     else:
         health_line = f"Needs attention: {', '.join(unhealthy)}"
+    near_misses = status.get("near_misses", [])
+    near_miss_lines = []
+    for item in near_misses[:3]:
+        label = item.get("symbol") or item.get("name") or str(item.get("candidate_key", "token"))[-8:]
+        blocker = (item.get("blockers") or ["quality confirmation pending"])[0]
+        near_miss_lines.append(
+            f"{label} {float(item.get('score', 0)):.0f}/100 — {blocker}"
+        )
+    near_miss_text = (
+        "\n\nTop screened near-misses:\n" + "\n".join(near_miss_lines)
+        if near_miss_lines else ""
+    )
     await update.message.reply_text(
         "🔎 First-Leg Scanner\n\n"
         f"Cadence: every {scanner_config.interval_seconds // 60} minute(s)\n"
@@ -457,7 +469,7 @@ async def scannerstatus_command(update: Update, context: ContextTypes.DEFAULT_TY
         f"{status.get('scout_threshold', scanner_config.scout_alert_score):.0f}/"
         f"{status.get('watch_threshold', scanner_config.min_alert_score):.0f}/"
         f"{status.get('buy_threshold', scanner_config.strong_alert_score):.0f}\n"
-        f"{health_line}"
+        f"{health_line}{near_miss_text}"
     )
 
 
