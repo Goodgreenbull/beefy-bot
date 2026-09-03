@@ -16,3 +16,9 @@ current files no longer contain it:
 
 The webhook route is derived from the active bot token during deployment. No
 wallet seed phrase or private key is accepted or required by the scanner.
+
+The GMGN integration is limited to `/v1/market/rank`,
+`/v1/market/token_signal`, and `/v1/trenches`. It sends only public chain names,
+market filters, timestamps, request IDs, and public token contracts. It does not
+accept or send a wallet address. Never add `GMGN_PRIVATE_KEY` or another signing
+credential to Render; this bot has no trading route that could use one.

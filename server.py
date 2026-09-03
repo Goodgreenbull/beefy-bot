@@ -473,6 +473,7 @@ async def scannerstatus_command(update: Update, context: ContextTypes.DEFAULT_TY
         f"Cadence: every {scanner_config.interval_seconds // 60} minute(s)\n"
         f"Last cycle: {last_cycle}\n"
         f"Candidates (24h): {status.get('candidates_24h', 0)}\n"
+        f"GMGN-qualified this cycle: {status.get('gmgn_candidates', 0)}\n"
         f"Snapshots (24h): {status.get('snapshots_24h', 0)}\n"
         f"Alerts (24h): {status.get('alerts_24h', 0)}\n"
         f"Outcome observations (24h): {status.get('outcomes_24h', 0)}\n"
@@ -859,13 +860,16 @@ async def home():
 
 @app.route("/health", methods=["GET"])
 async def health():
+    release = os.getenv("RENDER_GIT_COMMIT", "local")[:12]
     if scanner_service is None:
-        return {"bot": "ok", "scanner": "disabled"}
+        return {"bot": "ok", "scanner": "disabled", "release": release}
     status = scanner_service.status()
     return {
         "bot": "ok",
         "scanner": "running" if scanner_config.enabled else "disabled",
+        "release": release,
         "last_cycle_at": status.get("last_cycle_at"),
+        "gmgn_candidates": status.get("gmgn_candidates", 0),
         "feeds_with_errors": status.get("errors", 0),
     }
 

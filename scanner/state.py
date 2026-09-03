@@ -584,6 +584,21 @@ class SQLiteState:
             or symbol in {"oil", "usoil", "wti", "crude"}
         ):
             return "blocked US-oil/commodity impersonation theme"
+        stock_symbols = {
+            "aapl", "amzn", "goog", "googl", "gme", "meta", "msft", "mstr",
+            "nvda", "pltr", "qqq", "spcx", "tsla",
+        }
+        stock_names = {
+            "amazon", "apple", "gamestop", "google", "meta platforms",
+            "microstrategy", "microsoft", "nvidia", "palantir", "tesla",
+        }
+        launchpad = str(candidate.metadata.get("gmgn_launchpad") or "").lower()
+        if (
+            symbol in stock_symbols
+            or any(re.search(rf"\b{re.escape(stock_name)}\b", name) for stock_name in stock_names)
+            or launchpad in {"pool_robinhood_stock_amm", "o1_rwa"}
+        ):
+            return "blocked stock/RWA copy theme"
         return None
 
     def identity_risk(self, candidate: Candidate, lookback_days: int = 7) -> dict[str, Any]:

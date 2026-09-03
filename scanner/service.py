@@ -12,12 +12,12 @@ from .config import ScannerConfig
 from .feeds import (
     BankrLaunchFeed,
     BaselineLaunchFeed,
-    ClankerLaunchFeed,
     DexScreenerProfilesFeed,
     DexScreenerEnricher,
     FactoryLaunchFeed,
     FlaunchFeed,
     GeckoTerminalNewPoolsFeed,
+    GMGNReadOnlyFeed,
     OnchainFlowEnricher,
     PonsV1Enricher,
     PonsV2Enricher,
@@ -27,7 +27,6 @@ from .feeds import (
     SignalOverlay,
     SmartWalletMonitor,
     TokenRiskEnricher,
-    ZoraExploreFeed,
     _integer,
     _number,
     _timestamp,
@@ -66,9 +65,8 @@ class ScannerService:
             BankrLaunchFeed(config),
             PoolsFunLaunchFeed(),
             FlaunchFeed(config),
-            ClankerLaunchFeed(),
             BaselineLaunchFeed(),
-            ZoraExploreFeed(),
+            GMGNReadOnlyFeed(config),
             DexScreenerProfilesFeed(),
         ]
         self.feeds.extend(GeckoTerminalNewPoolsFeed(network) for network in config.gecko_networks)
@@ -175,6 +173,8 @@ class ScannerService:
 
         def source_lane(candidate: Candidate) -> str:
             sources = set(candidate.source.split(","))
+            if "gmgn" in sources:
+                return f"gmgn:{candidate.metadata.get('gmgn_launchpad', 'unknown')}"
             for lane in (
                 "pons-v2",
                 "pons-v1",
@@ -183,9 +183,7 @@ class ScannerService:
                 "o1-robinhood",
                 "o1-robinhood-stocks",
                 "baseline",
-                "clanker",
                 "flaunch",
-                "zora",
             ):
                 if lane in sources:
                     return lane
@@ -320,6 +318,90 @@ class ScannerService:
         )
 
     @staticmethod
+    def _apply_gmgn_evidence(candidate: Candidate, snapshot: MarketSnapshot) -> None:
+        market = candidate.metadata.get("gmgn_market")
+        if not isinstance(market, dict):
+            return
+        if not snapshot.price_usd:
+            snapshot.price_usd = _number(market.get("price_usd"), 0.0) or None
+        if not snapshot.liquidity_usd:
+            snapshot.liquidity_usd = _number(market.get("liquidity_usd"))
+        if not snapshot.market_cap_usd:
+            snapshot.market_cap_usd = _number(market.get("market_cap_usd"), 0.0) or None
+        if not snapshot.volume_5m_usd:
+            snapshot.volume_5m_usd = _number(market.get("volume_5m_usd"))
+        if snapshot.buys_5m + snapshot.sells_5m == 0:
+            snapshot.buys_5m = _integer(market.get("buys_5m"))
+            snapshot.sells_5m = _integer(market.get("sells_5m"))
+        snapshot.holder_count = max(
+            snapshot.holder_count or 0,
+            _integer(market.get("holder_count")),
+        ) or None
+        snapshot.social_links = max(
+            snapshot.social_links,
+            _integer(candidate.metadata.get("profile_social_links")),
+        )
+        # Only recent GMGN smart-money/KOL *signal events* count as entries.
+        # Total tagged holder counts are context and never become buy evidence.
+        snapshot.smart_wallet_buys = max(
+            snapshot.smart_wallet_buys,
+            _integer(candidate.metadata.get("gmgn_recent_smart_signals")),
+        )
+        gmgn_security = market.get("security")
+        gmgn_security = gmgn_security if isinstance(gmgn_security, dict) else {}
+        existing = snapshot.raw.get("security")
+        existing = dict(existing) if isinstance(existing, dict) else {}
+        providers = list(
+            dict.fromkeys(
+                [str(item) for item in existing.get("providers", [])]
+                + [str(item) for item in gmgn_security.get("providers", [])]
+            )
+        )
+        merged = {**gmgn_security, **existing}
+        merged["providers"] = providers
+        for field in (
+            "checked",
+            "admin_checks_complete",
+            "simulation_checked",
+            "sell_simulation_success",
+            "is_honeypot",
+            "cannot_buy",
+            "cannot_sell",
+            "fake_token",
+        ):
+            merged[field] = bool(existing.get(field) or gmgn_security.get(field))
+        for field in (
+            "buy_tax",
+            "sell_tax",
+            "top_unlocked_eoa_percent",
+            "creator_percent",
+            "risk_level",
+        ):
+            values = [
+                _number(value)
+                for value in (existing.get(field), gmgn_security.get(field))
+                if value not in (None, "")
+            ]
+            if values:
+                merged[field] = max(values)
+        open_source_values = [
+            value
+            for value in (existing.get("open_source"), gmgn_security.get("open_source"))
+            if value is not None
+        ]
+        if open_source_values:
+            merged["open_source"] = all(bool(value) for value in open_source_values)
+        snapshot.raw["security"] = merged
+        snapshot.raw["gmgn"] = {
+            "launchpad": candidate.metadata.get("gmgn_launchpad"),
+            "routes": candidate.metadata.get("gmgn_routes", []),
+            "smart_count": candidate.metadata.get("gmgn_smart_count", 0),
+            "kol_count": candidate.metadata.get("gmgn_kol_count", 0),
+            "recent_signal_types": candidate.metadata.get("gmgn_recent_signal_types", []),
+            "creator_token_count": candidate.metadata.get("gmgn_creator_token_count", 0),
+        }
+
+    @staticmethod
     def _apply_flow_signals(snapshot: MarketSnapshot, flow: dict | None) -> None:
         flow = flow or {}
         for field in (
@@ -388,7 +470,6 @@ class ScannerService:
             direct_sources = {
                 "bankr",
                 "flaunch",
-                "clanker",
                 "baseline",
                 "o1-b20",
                 "o1-robinhood",
@@ -397,7 +478,7 @@ class ScannerService:
                 "pons-v2",
                 "pools-fun",
                 "basestonk",
-                "zora",
+                "gmgn",
             }
             flow_candidates = [
                 (candidate, snapshot)
@@ -422,6 +503,7 @@ class ScannerService:
                     + _integer(external.get("exactCaMentions5m"), 0) * 3.0
                     + _integer(external.get("credibleSocialMentions5m"), 0) * 5.0
                     + _number(external.get("creatorActivityScore"), 0.0) * 5.0
+                    + min(8.0, _number(candidate.metadata.get("gmgn_priority")) / 10.0)
                 )
 
             ranked_flow = sorted(flow_candidates, key=flow_priority, reverse=True)
@@ -495,6 +577,7 @@ class ScannerService:
                     overlays.get(candidate.key),
                     wallet_signals.get(candidate.key),
                 )
+                self._apply_gmgn_evidence(candidate, snapshot)
                 self._apply_flow_signals(snapshot, flow_signals.get(candidate.key))
                 candidate.metadata["identity_risk"] = self.state.identity_risk(candidate)
                 candidate.metadata["deployer_reputation"] = self.state.deployer_reputation(candidate)
@@ -531,7 +614,6 @@ class ScannerService:
                             source in {
                                 "bankr",
                                 "flaunch",
-                                "clanker",
                                 "baseline",
                                 "o1-b20",
                                 "o1-robinhood",
@@ -540,7 +622,6 @@ class ScannerService:
                                 "pons-v2",
                                 "pools-fun",
                                 "basestonk",
-                                "zora",
                             }
                             for source in item[0].source.split(",")
                         )
@@ -629,6 +710,9 @@ class ScannerService:
                 "enriched": enriched_count,
                 "alerts": alert_count,
                 "outcomes": outcome_count,
+                "gmgn_candidates": sum(
+                    "gmgn" in candidate.source.split(",") for candidate in discovered
+                ),
                 "watch_threshold": thresholds["watch"],
                 "buy_threshold": thresholds["buy"],
                 "scout_threshold": thresholds["scout"],

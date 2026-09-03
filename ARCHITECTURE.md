@@ -5,6 +5,7 @@
 ```text
 launch APIs / profiles ─┐
 verified factory logs ──┼─> candidate state ─> market + contract enrichment
+GMGN read-only evidence ─┤
 V2/V3 pool events ──────┘                         │
 token Transfer logs ─────────────────────────────┼─> unique buyer/holder inflection
 exact-CA social / creator overlay ───────────────┤
@@ -23,7 +24,6 @@ Every external feed is isolated. One failing provider is recorded in `feed_healt
 
 - Bankr: polls its unauthenticated recent-launch endpoint and keeps both Base and Robinhood deployments, including deployer and supplied social links.
 - Flaunch: advances the documented `orderId` cursor and stores it in SQLite.
-- Clanker: polls its public Base token index directly.
 - Baseline: polls its public Base CoinGecko adapter and asset/pair metadata.
 - o1/B20: reads verified production `Launched` events from the Base and Robinhood factories, including Robinhood tokenized-stock launches.
 - pons: reads both factory event formats directly. Current curve launches get on-chain price, real quote liquidity, 5m/15m trade wallets, creator selling, fees, holder concentration and supplied social links; Uniswap V3 launches get direct slot-price and locked-pool liquidity estimates.
@@ -31,6 +31,9 @@ Every external feed is isolated. One failing provider is recorded in `feed_healt
 - New pools: polls GeckoTerminal's per-network `new_pools` feed.
 - Base: polls standard V2 `PairCreated` and V3 `PoolCreated` events only from verified Uniswap and Sushi factory addresses.
 - Robinhood: polls the officially documented pons Uniswap V3 and pools.fun Sushi V3 factories, selecting the non-WETH/USDG side. It also uses HooderScan's no-key cached market endpoint for a rotating maximum of 18 candidates per cycle when direct pricing and DexScreener are unavailable. Block cursors prevent gaps during normal restarts.
+- GMGN: makes five read-only calls per cycle for Base/Robinhood 5m rank, launchpad trenches, and recent Robinhood smart/KOL/platform-call events. It hard-filters unsafe, illiquid, late, stock/RWA-copy, SpaceX, stablecoin and oil themes before admitting at most 80 diversified candidates. The client has an explicit route allowlist and no wallet, portfolio, quote, swap, order or signing surface.
+
+Dedicated Clanker and Zora feed lanes are disabled. In the measured free-tier run they occupied 15 of 50 analysis slots while producing one usable snapshot. Their liquid tokens remain discoverable through GeckoTerminal, DexScreener, verified pool events, or GMGN.
 
 Pools.fun is covered at the documented Sushi V3 pool-creation layer. The official Pools.fun contracts page does not currently publish its PartyFactory address. Likewise, the scanner does not ship a scraped BaseStonk factory address as if it were authoritative. `SCANNER_FACTORY_FEEDS_JSON` provides direct event ingestion as soon as a current factory/event is verified from a first-party source.
 
@@ -65,6 +68,7 @@ The 0–100 score is inspectable and gives the largest weights to change happeni
 - direct-launch provenance, creator outcome history and explicit product/narrative evidence;
 - liquidity depth and a free sell-simulation-based £20 sellability proxy;
 - contract safety, creator history, and holder concentration.
+- GMGN smart/KOL signal events and tagged-holder context, without treating historical tagged-wallet totals as fresh entries.
 
 The anti-late gate penalizes anything already above 2x from its measured local base, vertical blow-offs, extended hourly moves, sell dominance, post-peak distribution and fading flow. High churn without buyer/holder growth, many transactions from very few unique wallets, unidentifiable or poor-history deployers, deployer selling, fake associations, duplicate identities and serial launching all reduce or block conviction. The safety gate retains the honeypot, sell restriction, dangerous concentration, tax, unlocked-liquidity and admin-control checks.
 

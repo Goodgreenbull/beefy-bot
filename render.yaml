@@ -41,3 +41,11 @@ services:
         value: "12"
       - key: SCANNER_MAX_ROBINHOOD_MARKET_CHECKS
         value: "18"
+      - key: SCANNER_GMGN_ENABLED
+        value: "true"
+      - key: SCANNER_GMGN_CANDIDATE_LIMIT
+        value: "80"
+      - key: SCANNER_GMGN_MAX_AGE_HOURS
+        value: "24"
+      - key: SCANNER_GMGN_BASE_PLATFORMS
+        value: "bankr,flaunch,baseapp,basememe,virtuals_v2,klik,o1"

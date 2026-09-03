@@ -15,13 +15,20 @@ def _ratio(numerator: float, denominator: float, default: float = 0.0) -> float:
     return numerator / denominator if denominator > 0 else default
 
 
+def _integer(value: object, default: int = 0) -> int:
+    try:
+        return int(value) if value not in (None, "") else default
+    except (TypeError, ValueError):
+        return default
+
+
 class SignalScorer:
     """Inflection-first scoring. Outputs alerts and never places an order."""
 
     VERIFIED_SOURCES = {
-        "bankr", "flaunch", "clanker", "baseline", "o1-b20",
+        "bankr", "flaunch", "baseline", "o1-b20",
         "o1-robinhood", "o1-robinhood-stocks", "pons-v1", "pons-v2",
-        "pools-fun", "basestonk", "zora",
+        "pools-fun", "basestonk",
     }
 
     def __init__(self, config: ScannerConfig) -> None:
@@ -85,6 +92,7 @@ class SignalScorer:
         exact_ca_acceleration = _ratio(snapshot.exact_ca_mentions_5m, older_mentions / 2.0)
         source_names = set(candidate.source.split(","))
         trusted_launch = bool(source_names & self.VERIFIED_SOURCES)
+        gmgn_evidence = bool(candidate.metadata.get("gmgn_evidence"))
         platform_provenance = bool(
             trusted_launch
             and (
@@ -100,6 +108,8 @@ class SignalScorer:
         deployer_reputation = candidate.metadata.get("deployer_reputation")
         deployer_reputation = deployer_reputation if isinstance(deployer_reputation, dict) else {}
         creator_activity = _clamp(float(snapshot.raw.get("creator_activity_score") or 0.0), 0.0, 1.0)
+        gmgn = snapshot.raw.get("gmgn") if isinstance(snapshot.raw, dict) else {}
+        gmgn = gmgn if isinstance(gmgn, dict) else {}
 
         components: dict[str, float] = {}
         if age_minutes <= 15:
@@ -112,7 +122,7 @@ class SignalScorer:
             components["freshness"] = 2.0
         else:
             components["freshness"] = 0.5
-        components["direct_discovery"] = 6.0 if trusted_launch else 2.0
+        components["direct_discovery"] = 6.0 if trusted_launch else (5.0 if gmgn_evidence else 2.0)
         components["creator_narrative"] = _clamp(
             (2.0 if candidate.deployer else 0.0) + snapshot.creator_reputation * 4.0
             + min(3.0, snapshot.social_links * 1.0)
@@ -185,6 +195,10 @@ class SignalScorer:
                 hard_risk = True
         if identity.get("blocked_theme"):
             hard_risk = True
+        gmgn_creator_tokens = _integer(gmgn.get("creator_token_count"), 0)
+        if gmgn_creator_tokens >= 10:
+            blockers.append(f"creator linked to {gmgn_creator_tokens} token launches")
+            risk_penalty += min(16.0, 5.0 + (gmgn_creator_tokens - 10) * 0.25)
         if not candidate.deployer:
             blockers.append("creator/deployer not identified")
             risk_penalty += 4.0
@@ -439,7 +453,11 @@ class SignalScorer:
 
         labels = {
             "freshness": f"fresh ({age_minutes:.0f}m)",
-            "direct_discovery": f"direct {candidate.source.split(',')[0]} discovery",
+            "direct_discovery": (
+                f"GMGN-qualified {candidate.metadata.get('gmgn_launchpad', 'market')} discovery"
+                if gmgn_evidence and not trusted_launch
+                else f"direct {candidate.source.split(',')[0]} discovery"
+            ),
             "creator_narrative": "creator/narrative evidence",
             "buyer_velocity": f"buyer velocity {buyer_acceleration:.1f}x",
             "holder_velocity": f"net new wallets +{snapshot.net_new_wallets_5m}/5m",

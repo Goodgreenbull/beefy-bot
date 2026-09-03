@@ -75,6 +75,14 @@ def format_alert(candidate: Candidate, snapshot: MarketSnapshot, result: ScoreRe
     )
     providers = "+".join(str(item) for item in security.get("providers", [])) or "free checks"
     holder_text = str(snapshot.holder_count) if snapshot.holder_count else "n/a"
+    gmgn = snapshot.raw.get("gmgn") if isinstance(snapshot.raw, dict) else {}
+    gmgn = gmgn if isinstance(gmgn, dict) else {}
+    tagged_wallet_text = ""
+    if gmgn:
+        tagged_wallet_text = (
+            f" · GMGN tagged {int(gmgn.get('smart_count') or 0)} smart/"
+            f"{int(gmgn.get('kol_count') or 0)} KOL"
+        )
     lines = [
         f"🚨 <b>{chain} · {html.escape(result.signal)} · {result.score:.0f}/100 · {html.escape(result.stage)}</b>",
         f"<b>{name} (${symbol})</b>",
@@ -83,7 +91,7 @@ def format_alert(candidate: Candidate, snapshot: MarketSnapshot, result: ScoreRe
         "",
         f"MC first {_money(first_market_cap)} · alert {_money(alert_market_cap)} · Liq {_money(snapshot.liquidity_usd)}",
         f"Age {age} · {snapshot.buys_5m}B/{snapshot.sells_5m}S · net wallets {snapshot.net_new_wallets_5m:+d}/5m",
-        f"Holders {holder_text} · exact-CA social {snapshot.exact_ca_mentions_5m}/5m · via {source}",
+        f"Holders {holder_text}{tagged_wallet_text} · exact-CA social {snapshot.exact_ca_mentions_5m}/5m · via {source}",
         (
             f"£20 sellability proxy PASS ({providers}) · tax "
             f"{float(security.get('buy_tax') or 0):.1f}%/{float(security.get('sell_tax') or 0):.1f}%"

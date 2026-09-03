@@ -64,6 +64,43 @@ class FakeEnricher:
 
 
 class ScannerServiceTests(unittest.IsolatedAsyncioTestCase):
+    async def test_live_feed_set_replaces_clanker_and_zora_with_gmgn(self):
+        state = SQLiteState(":memory:")
+        service = ScannerService(ScannerConfig(), state)
+        try:
+            names = {feed.name for feed in service.feeds}
+        finally:
+            state.close()
+        self.assertIn("gmgn", names)
+        self.assertNotIn("clanker", names)
+        self.assertNotIn("zora", names)
+
+    async def test_gmgn_total_wallet_tags_do_not_become_fake_recent_buys(self):
+        candidate = Candidate(
+            chain="robinhood",
+            token_address=TOKEN,
+            source="gmgn",
+            metadata={
+                "gmgn_smart_count": 100,
+                "gmgn_kol_count": 50,
+                "gmgn_recent_smart_signals": 1,
+                "gmgn_market": {
+                    "holder_count": 200,
+                    "security": {
+                        "checked": True,
+                        "admin_checks_complete": True,
+                        "providers": ["gmgn"],
+                        "is_honeypot": False,
+                    },
+                },
+            },
+        )
+        snapshot = MarketSnapshot(chain="robinhood", token_address=TOKEN)
+        ScannerService._apply_gmgn_evidence(candidate, snapshot)
+        self.assertEqual(snapshot.smart_wallet_buys, 1)
+        self.assertEqual(snapshot.raw["gmgn"]["smart_count"], 100)
+        self.assertEqual(snapshot.holder_count, 200)
+
     async def test_active_selection_reserves_chain_and_platform_lanes(self):
         state = SQLiteState(":memory:")
         config = ScannerConfig(active_candidate_limit=12)

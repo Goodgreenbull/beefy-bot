@@ -16,6 +16,11 @@ ROBINHOOD_QUOTES = {
     "0x5fc5360d0400a0fd4f2af552add042d716f1d168",  # USDG
 }
 
+# GMGN and Base publish this credential for read-only market intelligence.
+# It cannot sign, swap, place orders, or access a user wallet. Operators can
+# override it with their own read-only key without changing source code.
+GMGN_PUBLIC_READ_ONLY_KEY = "gmgn_basesolbscethmonadtron"
+
 # Verified Base factory deployments. Generic event signatures are only trusted
 # when the emitting contract is explicitly allowlisted.
 BASE_DEX_FACTORIES = {
@@ -100,6 +105,19 @@ class ScannerConfig:
     max_security_checks_per_cycle: int = 12
     max_flow_checks_per_cycle: int = 12
     max_robinhood_market_checks_per_cycle: int = 18
+    gmgn_enabled: bool = True
+    gmgn_api_key: str = GMGN_PUBLIC_READ_ONLY_KEY
+    gmgn_candidate_limit: int = 80
+    gmgn_max_age_hours: int = 24
+    gmgn_base_platforms: tuple[str, ...] = (
+        "bankr",
+        "flaunch",
+        "baseapp",
+        "basememe",
+        "virtuals_v2",
+        "klik",
+        "o1",
+    )
     flow_5m_blocks: int = 150
     flow_15m_blocks: int = 450
     max_flow_transactions: int = 60
@@ -189,6 +207,17 @@ class ScannerConfig:
             max_flow_checks_per_cycle=max(1, _int("SCANNER_MAX_FLOW_CHECKS", 12)),
             max_robinhood_market_checks_per_cycle=max(
                 1, _int("SCANNER_MAX_ROBINHOOD_MARKET_CHECKS", 18)
+            ),
+            gmgn_enabled=_bool("SCANNER_GMGN_ENABLED", True),
+            gmgn_api_key=(
+                os.getenv("GMGN_API_KEY", GMGN_PUBLIC_READ_ONLY_KEY).strip()
+                or GMGN_PUBLIC_READ_ONLY_KEY
+            ),
+            gmgn_candidate_limit=max(10, min(150, _int("SCANNER_GMGN_CANDIDATE_LIMIT", 80))),
+            gmgn_max_age_hours=max(1, min(168, _int("SCANNER_GMGN_MAX_AGE_HOURS", 24))),
+            gmgn_base_platforms=_csv(
+                "SCANNER_GMGN_BASE_PLATFORMS",
+                "bankr,flaunch,baseapp,basememe,virtuals_v2,klik,o1",
             ),
             flow_5m_blocks=max(20, _int("SCANNER_FLOW_5M_BLOCKS", 150)),
             flow_15m_blocks=max(60, _int("SCANNER_FLOW_15M_BLOCKS", 450)),

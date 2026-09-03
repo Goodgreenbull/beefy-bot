@@ -3,8 +3,10 @@ from __future__ import annotations
 import asyncio
 from collections import defaultdict
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+import re
 from typing import Any, TYPE_CHECKING
+import uuid
 
 import aiohttp
 
@@ -309,6 +311,507 @@ class ZoraExploreFeed:
                 )
             )
         return candidates
+
+
+class GMGNReadOnlyFeed:
+    """Quality-filtered Base and Robinhood discovery from GMGN's public API.
+
+    This client has an intentionally tiny, read-only surface. It never accepts a
+    wallet address and cannot reach quote, swap, order, portfolio, or signing
+    endpoints. GMGN augments discovery and evidence; Beefy's own scorer remains
+    the only component that can produce a Telegram verdict.
+    """
+
+    name = "gmgn"
+    host = "https://openapi.gmgn.ai"
+    allowed_paths = {
+        "/v1/market/rank",
+        "/v1/market/token_signal",
+        "/v1/trenches",
+    }
+    stock_symbols = {
+        "aapl",
+        "amzn",
+        "goog",
+        "googl",
+        "gme",
+        "meta",
+        "msft",
+        "mstr",
+        "nvda",
+        "pltr",
+        "qqq",
+        "spcx",
+        "tsla",
+    }
+    stock_names = {
+        "amazon",
+        "apple",
+        "gamestop",
+        "google",
+        "meta platforms",
+        "microstrategy",
+        "microsoft",
+        "nvidia",
+        "palantir",
+        "spacex",
+        "tesla",
+    }
+    quote_address_types = {
+        "base": [11, 3, 12, 13, 0],
+        "robinhood": [11, 20, 24, 12, 0],
+    }
+
+    def __init__(self, config: ScannerConfig) -> None:
+        self.config = config
+        self.api_key = config.gmgn_api_key
+        self.max_items = config.gmgn_candidate_limit
+        self.max_age_hours = config.gmgn_max_age_hours
+        self.base_platforms = list(config.gmgn_base_platforms)
+        self._request_lock = asyncio.Lock()
+        self._last_request_at = 0.0
+
+    @staticmethod
+    def _unwrap(payload: Any) -> Any:
+        value = payload
+        for _ in range(4):
+            if not isinstance(value, dict) or "code" not in value:
+                break
+            if str(value.get("code")) != "0":
+                message = value.get("message") or value.get("error") or "GMGN API error"
+                raise RuntimeError(str(message))
+            if "data" not in value:
+                break
+            value = value["data"]
+        return value
+
+    async def _request(
+        self,
+        session: aiohttp.ClientSession,
+        method: str,
+        path: str,
+        *,
+        query: dict[str, Any],
+        body: dict[str, Any] | None = None,
+    ) -> Any:
+        if path not in self.allowed_paths:
+            raise RuntimeError(f"refusing non-read-only GMGN path: {path}")
+        if not self.api_key:
+            raise RuntimeError("GMGN read-only API key is not configured")
+        params = {
+            **query,
+            "timestamp": int(datetime.now(timezone.utc).timestamp()),
+            "client_id": str(uuid.uuid4()).lower(),
+        }
+        headers = {
+            "X-APIKEY": self.api_key,
+            "Content-Type": "application/json",
+            # GMGN explicitly identifies supported OpenAPI clients by this UA
+            # family; generic/custom agents can be rejected by Cloudflare.
+            "User-Agent": "gmgn-cli/1.5.6",
+        }
+        async with self._request_lock:
+            for attempt in range(3):
+                elapsed = asyncio.get_running_loop().time() - self._last_request_at
+                if elapsed < 0.08:
+                    await asyncio.sleep(0.08 - elapsed)
+                request = session.post if method == "POST" else session.get
+                kwargs: dict[str, Any] = {"params": params, "headers": headers}
+                if body is not None:
+                    kwargs["json"] = body
+                async with request(f"{self.host}{path}", **kwargs) as response:
+                    self._last_request_at = asyncio.get_running_loop().time()
+                    if response.status == 429:
+                        retry_header = getattr(response, "headers", {}).get("Retry-After")
+                        try:
+                            retry_after = float(retry_header)
+                        except (TypeError, ValueError):
+                            retry_after = 0.8 * (2 ** attempt)
+                    elif response.status >= 400:
+                        raise RuntimeError(f"GMGN {path} HTTP {response.status}")
+                    else:
+                        return self._unwrap(await response.json(content_type=None))
+                await asyncio.sleep(min(4.0, max(0.5, retry_after)))
+        raise RuntimeError(f"GMGN {path} rate limited after retries")
+
+    def _trenches_body(
+        self, chain: str, platforms: list[str] | None = None
+    ) -> dict[str, Any]:
+        section: dict[str, Any] = {
+            "filters": ["offchain", "onchain"],
+            "launchpad_platform_v2": True,
+            "limit": 40,
+            "quote_address_type": self.quote_address_types[chain],
+        }
+        if platforms:
+            section["launchpad_platform"] = platforms
+        return {
+            "version": "v2",
+            "new_creation": dict(section),
+            "near_completion": dict(section),
+            "completed": dict(section),
+        }
+
+    @staticmethod
+    def _walk_token_rows(value: Any) -> list[dict[str, Any]]:
+        rows: list[dict[str, Any]] = []
+        if isinstance(value, dict):
+            address = normalise_address(value.get("address") or value.get("token_address"))
+            if len(address) == 42:
+                rows.append(value)
+            for nested in value.values():
+                rows.extend(GMGNReadOnlyFeed._walk_token_rows(nested))
+        elif isinstance(value, list):
+            for nested in value:
+                rows.extend(GMGNReadOnlyFeed._walk_token_rows(nested))
+        return rows
+
+    @staticmethod
+    def _flatten_row(row: dict[str, Any]) -> dict[str, Any]:
+        flattened: dict[str, Any] = {}
+        for key in ("token", "cur_data", "data"):
+            nested = row.get(key)
+            if isinstance(nested, dict):
+                flattened.update(
+                    {nested_key: nested_value for nested_key, nested_value in nested.items() if not isinstance(nested_value, (dict, list))}
+                )
+        flattened.update(
+            {key: value for key, value in row.items() if not isinstance(value, (dict, list))}
+        )
+        return flattened
+
+    @staticmethod
+    def _merge_row(existing: dict[str, Any], incoming: dict[str, Any]) -> None:
+        cumulative_fields = {
+            "holder_count",
+            "smart_degen_count",
+            "renowned_count",
+        }
+        for key, value in incoming.items():
+            if value in (None, "", [], {}):
+                continue
+            if key not in existing or existing[key] in (None, "", 0):
+                existing[key] = value
+            # Rank is queried before launch and signal routes, so its live market
+            # values win. Only genuinely cumulative counts are safe to maximise;
+            # mixing the largest price/MC/flow values across windows would make
+            # Beefy judge a price that was never available at alert time.
+            elif key in cumulative_fields and _number(value) > _number(existing[key]):
+                existing[key] = value
+
+    def _blocked_theme(self, name: str, symbol: str, launchpad: str) -> bool:
+        identity = f"{name} {symbol}".lower()
+        compact = "".join(character for character in identity if character.isalnum())
+        symbol_key = "".join(character for character in symbol.lower() if character.isalnum())
+        if "spacex" in compact or symbol_key in self.stock_symbols:
+            return True
+        if any(re.search(rf"\b{re.escape(stock_name)}\b", identity) for stock_name in self.stock_names):
+            return True
+        if launchpad in {"pool_robinhood_stock_amm", "o1_rwa"}:
+            return True
+        if (
+            symbol_key in {"usd", "usdc", "usdt", "busd", "usde", "usds"}
+            or symbol_key.startswith("usd")
+            or any(term in identity for term in ("stablecoin", "stable coin", "us dollar"))
+        ):
+            return True
+        if symbol_key in {"oil", "usoil", "wti", "crude"} or any(
+            term in identity for term in ("us oil", "crude oil", "west texas intermediate")
+        ):
+            return True
+        return False
+
+    @staticmethod
+    def _social_links(row: dict[str, Any]) -> int:
+        return sum(bool(row.get(key)) for key in ("twitter_username", "twitter", "website", "telegram"))
+
+    def _candidate(
+        self,
+        row: dict[str, Any],
+        chain_hint: str,
+        signal_events: list[tuple[int, int]],
+        route_names: set[str],
+    ) -> Candidate | None:
+        chain = str(row.get("chain") or chain_hint).lower()
+        address = normalise_address(row.get("address") or row.get("token_address"))
+        if chain not in {"base", "robinhood"} or len(address) != 42:
+            return None
+        name = str(row.get("name") or "").strip()
+        symbol = str(row.get("symbol") or "").strip()
+        launchpad = str(row.get("launchpad_platform") or row.get("launchpad") or "unknown").lower()
+        if self._blocked_theme(name, symbol, launchpad):
+            return None
+
+        market_cap = _number(row.get("market_cap") or row.get("marketcap") or row.get("mc"))
+        liquidity = _number(row.get("liquidity") or row.get("liquidity_usd"))
+        price = _number(row.get("price") or row.get("price_usd"))
+        buys = _integer(row.get("buys"))
+        sells = _integer(row.get("sells"))
+        swaps = _integer(row.get("swaps"), buys + sells)
+        holder_count = _integer(row.get("holder_count"))
+        smart_count = _integer(row.get("smart_degen_count"))
+        kol_count = _integer(row.get("renowned_count"))
+        top10_rate = _number(row.get("top_10_holder_rate"))
+        rug_ratio = _number(row.get("rug_ratio"))
+        buy_tax = _percent(row.get("buy_tax"), 0.0) or 0.0
+        sell_tax = _percent(row.get("sell_tax"), 0.0) or 0.0
+        launch_at = _timestamp(
+            row.get("creation_timestamp")
+            or row.get("open_timestamp")
+            or row.get("created_at")
+            or row.get("create_time")
+        )
+        age_hours = (
+            (datetime.now(timezone.utc) - launch_at).total_seconds() / 3600.0
+            if launch_at
+            else None
+        )
+        social_links = self._social_links(row)
+        total_trades = swaps or buys + sells
+        buy_ratio = buys / (buys + sells) if buys + sells else 0.0
+        credible_activity = bool(
+            smart_count + kol_count >= 2
+            or (total_trades >= 10 and buy_ratio >= 0.50)
+            or social_links >= 2
+            or signal_events
+        )
+        if (
+            market_cap < 3_000
+            or market_cap > self.config.max_market_cap_usd
+            or liquidity < self.config.min_liquidity_usd
+            or (age_hours is not None and (age_hours < 0 or age_hours > self.max_age_hours))
+            or (age_hours is None and not signal_events)
+            or not credible_activity
+            or _truthy(row.get("is_honeypot"))
+            or _truthy(row.get("is_wash_trading"))
+            or rug_ratio > 0.30
+            or top10_rate > 0.50
+            or buy_tax >= 5.0
+            or sell_tax >= 5.0
+        ):
+            return None
+
+        now_epoch = int(datetime.now(timezone.utc).timestamp())
+        recent_signal_types = sorted(
+            {
+                signal_type
+                for signal_type, trigger_at in signal_events
+                if signal_type in {12, 13, 20} and now_epoch - trigger_at <= 900
+            }
+        )
+        recent_smart_signals = len({item for item in recent_signal_types if item in {12, 20}})
+        security = {
+            "checked": any(
+                key in row
+                for key in (
+                    "is_honeypot",
+                    "is_open_source",
+                    "is_renounced",
+                    "top_10_holder_rate",
+                    "rug_ratio",
+                )
+            ),
+            "admin_checks_complete": all(
+                key in row for key in ("is_open_source", "is_renounced", "buy_tax", "sell_tax")
+            ),
+            "simulation_checked": False,
+            "sell_simulation_success": False,
+            "providers": ["gmgn"],
+            "is_honeypot": _truthy(row.get("is_honeypot")),
+            "cannot_buy": False,
+            "cannot_sell": False,
+            "open_source": None if row.get("is_open_source") is None else _truthy(row.get("is_open_source")),
+            "buy_tax": buy_tax,
+            "sell_tax": sell_tax,
+            "top_unlocked_eoa_percent": top10_rate * 100.0,
+            "creator_percent": max(
+                _number(row.get("dev_team_hold_rate")),
+                _number(row.get("creator_balance_rate")),
+            ) * 100.0,
+            "holder_count": holder_count or None,
+            "risk_level": round(rug_ratio * 100.0),
+            "risk_label": "gmgn rug-risk estimate",
+            "flags": [
+                flag
+                for flag, active in (
+                    ("wash-trading", _truthy(row.get("is_wash_trading"))),
+                    ("high-concentration", top10_rate > 0.35),
+                )
+                if active
+            ],
+        }
+        priority = (
+            (20.0 if age_hours is not None and age_hours <= 1 else 10.0)
+            + min(20.0, max(0.0, buy_ratio - 0.45) * 50.0)
+            + min(20.0, smart_count + kol_count)
+            + min(15.0, total_trades / 10.0)
+            + min(10.0, liquidity / 10_000.0)
+            + len(recent_signal_types) * 5.0
+        )
+        return Candidate(
+            chain=chain,
+            token_address=address,
+            source=self.name,
+            launch_at=launch_at,
+            name=name or None,
+            symbol=symbol or None,
+            deployer=row.get("creator") or row.get("deployer"),
+            chart_url=f"https://gmgn.ai/{chain}/token/{address}",
+            metadata={
+                "gmgn_evidence": True,
+                "gmgn_launchpad": launchpad,
+                "gmgn_routes": sorted(route_names),
+                "gmgn_priority": round(priority, 2),
+                "gmgn_smart_count": smart_count,
+                "gmgn_kol_count": kol_count,
+                "gmgn_recent_signal_types": recent_signal_types,
+                "gmgn_recent_smart_signals": recent_smart_signals,
+                "gmgn_creator_token_count": _integer(row.get("twitter_create_token_count")),
+                "profile_social_links": social_links,
+                "gmgn_market": {
+                    "price_usd": price or None,
+                    "liquidity_usd": liquidity,
+                    "market_cap_usd": market_cap,
+                    "volume_5m_usd": _number(row.get("volume")) if "rank" in route_names else 0.0,
+                    "buys_5m": buys if "rank" in route_names else 0,
+                    "sells_5m": sells if "rank" in route_names else 0,
+                    "holder_count": holder_count or None,
+                    "price_change_5m": _number(row.get("price_change_percent5m")),
+                    "price_change_1h": _number(row.get("price_change_percent1h")),
+                    "price_change_24h": _number(row.get("price_change_percent24h")),
+                    "security": security,
+                },
+            },
+        )
+
+    async def discover(
+        self, session: aiohttp.ClientSession, state: "SQLiteState"
+    ) -> list[Candidate]:
+        if not self.config.gmgn_enabled:
+            return []
+        day_ago = int((datetime.now(timezone.utc) - timedelta(hours=self.max_age_hours)).timestamp())
+        calls = [
+            (
+                "gmgn-base-rank",
+                "base",
+                "rank",
+                "GET",
+                "/v1/market/rank",
+                {"chain": "base", "interval": "5m", "limit": 80, "order_by": "swaps", "direction": "desc"},
+                None,
+            ),
+            (
+                "gmgn-robinhood-rank",
+                "robinhood",
+                "rank",
+                "GET",
+                "/v1/market/rank",
+                {"chain": "robinhood", "interval": "5m", "limit": 80, "order_by": "swaps", "direction": "desc"},
+                None,
+            ),
+            (
+                "gmgn-base-launches",
+                "base",
+                "trenches",
+                "POST",
+                "/v1/trenches",
+                {"chain": "base"},
+                self._trenches_body("base", self.base_platforms),
+            ),
+            (
+                "gmgn-robinhood-launches",
+                "robinhood",
+                "trenches",
+                "POST",
+                "/v1/trenches",
+                {"chain": "robinhood"},
+                self._trenches_body("robinhood"),
+            ),
+            (
+                "gmgn-robinhood-signals",
+                "robinhood",
+                "signals",
+                "POST",
+                "/v1/market/token_signal",
+                {},
+                {
+                    "chain": "robinhood",
+                    "groups": [
+                        {
+                            "signal_type": [12, 13, 20],
+                            "mc_min": 3_000,
+                            "mc_max": self.config.max_market_cap_usd,
+                            "min_create_or_open_ts": str(day_ago),
+                        }
+                    ],
+                },
+            ),
+        ]
+        aggregated: dict[str, dict[str, Any]] = {}
+        successful_routes = 0
+        first_error: Exception | None = None
+        for health_name, chain, route, method, path, query, body in calls:
+            try:
+                payload = await self._request(
+                    session, method, path, query=query, body=body
+                )
+                rows = self._walk_token_rows(payload)
+                state.mark_feed_success(health_name, len(rows))
+                successful_routes += 1
+            except Exception as error:
+                state.mark_feed_error(health_name, error)
+                first_error = first_error or error
+                continue
+            for raw in rows:
+                row = self._flatten_row(raw)
+                address = normalise_address(row.get("address") or row.get("token_address"))
+                if len(address) != 42:
+                    continue
+                key = f"{chain}:{address}"
+                bucket = aggregated.setdefault(
+                    key,
+                    {"row": {"chain": chain, "address": address}, "events": [], "routes": set()},
+                )
+                self._merge_row(bucket["row"], row)
+                bucket["routes"].add(route)
+                signal_type = _integer(row.get("signal_type"))
+                trigger_at = _integer(row.get("trigger_at"))
+                if signal_type and trigger_at:
+                    bucket["events"].append((signal_type, trigger_at))
+        if not successful_routes and first_error:
+            raise first_error
+
+        candidates = [
+            candidate
+            for bucket in aggregated.values()
+            if (
+                candidate := self._candidate(
+                    bucket["row"],
+                    str(bucket["row"].get("chain")),
+                    bucket["events"],
+                    bucket["routes"],
+                )
+            )
+        ]
+        candidates.sort(
+            key=lambda candidate: (
+                _number(candidate.metadata.get("gmgn_priority")),
+                candidate.launch_at or candidate.discovered_at,
+            ),
+            reverse=True,
+        )
+        per_lane_limit = max(4, self.max_items // 6)
+        lane_counts: dict[str, int] = defaultdict(int)
+        selected: list[Candidate] = []
+        for candidate in candidates:
+            lane = f"{candidate.chain}:{candidate.metadata.get('gmgn_launchpad', 'unknown')}"
+            if lane_counts[lane] >= per_lane_limit:
+                continue
+            lane_counts[lane] += 1
+            selected.append(candidate)
+            if len(selected) >= self.max_items:
+                break
+        return selected
 
 
 class FlaunchFeed:
@@ -1470,6 +1973,40 @@ def snapshot_from_fallback(candidate: Candidate) -> MarketSnapshot | None:
             price_change_24h=_number(change.get("h24")),
             source="geckoterminal",
             raw={"dex": candidate.metadata.get("dex")},
+        )
+    gmgn = candidate.metadata.get("gmgn_market")
+    if isinstance(gmgn, dict) and _number(gmgn.get("price_usd")) > 0:
+        security = gmgn.get("security") if isinstance(gmgn.get("security"), dict) else {}
+        return MarketSnapshot(
+            chain=candidate.chain,
+            token_address=candidate.token_address,
+            price_usd=_number(gmgn.get("price_usd"), 0.0) or None,
+            liquidity_usd=_number(gmgn.get("liquidity_usd")),
+            market_cap_usd=_number(gmgn.get("market_cap_usd"), 0.0) or None,
+            volume_5m_usd=_number(gmgn.get("volume_5m_usd")),
+            buys_5m=_integer(gmgn.get("buys_5m")),
+            sells_5m=_integer(gmgn.get("sells_5m")),
+            price_change_5m=_number(gmgn.get("price_change_5m")),
+            price_change_1h=_number(gmgn.get("price_change_1h")),
+            price_change_24h=_number(gmgn.get("price_change_24h")),
+            social_links=_integer(candidate.metadata.get("profile_social_links")),
+            holder_count=_integer(gmgn.get("holder_count"), 0) or None,
+            smart_wallet_buys=_integer(candidate.metadata.get("gmgn_recent_smart_signals")),
+            source="gmgn",
+            raw={
+                "url": candidate.chart_url,
+                "name": candidate.name,
+                "symbol": candidate.symbol,
+                "security": security,
+                "gmgn": {
+                    "launchpad": candidate.metadata.get("gmgn_launchpad"),
+                    "routes": candidate.metadata.get("gmgn_routes", []),
+                    "smart_count": candidate.metadata.get("gmgn_smart_count", 0),
+                    "kol_count": candidate.metadata.get("gmgn_kol_count", 0),
+                    "recent_signal_types": candidate.metadata.get("gmgn_recent_signal_types", []),
+                    "creator_token_count": candidate.metadata.get("gmgn_creator_token_count", 0),
+                },
+            },
         )
     baseline = candidate.metadata.get("baseline_market")
     if isinstance(baseline, dict):

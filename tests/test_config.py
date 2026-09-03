@@ -20,6 +20,10 @@ class ScannerConfigTests(unittest.TestCase):
         self.assertEqual(config.exceptional_scout_score, 55)
         self.assertEqual(config.max_flow_checks_per_cycle, 12)
         self.assertEqual(config.max_robinhood_market_checks_per_cycle, 18)
+        self.assertTrue(config.gmgn_enabled)
+        self.assertEqual(config.gmgn_candidate_limit, 80)
+        self.assertEqual(config.gmgn_max_age_hours, 24)
+        self.assertIn("o1", config.gmgn_base_platforms)
         self.assertTrue(config.dex_factories["robinhood"])
 
     def test_explicit_signal_chat_wins_without_exposing_credentials(self):

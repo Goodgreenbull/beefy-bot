@@ -73,11 +73,16 @@ class SQLiteStateTests(unittest.TestCase):
         self.assertEqual(self.state.get_cursor("feed"), "42")
         self.assertEqual(self.state.health()[0]["items_seen"], 3)
 
-    def test_operator_rejected_spacex_usd_and_oil_themes_are_hard_blocked(self):
+    def test_operator_rejected_spacex_usd_oil_and_stock_themes_are_hard_blocked(self):
         rows = [
             Candidate(chain="base", token_address=f"0x{index + 300:040x}", source="bankr", name=name, symbol=symbol)
             for index, (name, symbol) in enumerate(
-                (("Space X Official", "SPACEX"), ("United States Dollar", "USD"), ("US Crude Oil", "WTI"))
+                (
+                    ("Space X Official", "SPACEX"),
+                    ("United States Dollar", "USD"),
+                    ("US Crude Oil", "WTI"),
+                    ("Tesla Stock", "TSLA"),
+                )
             )
         ]
         for candidate in rows:

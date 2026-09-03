@@ -1,3 +1,4 @@
+import time
 import types
 import unittest
 from unittest.mock import AsyncMock, patch
@@ -10,6 +11,7 @@ from scanner.feeds import (
     DexScreenerEnricher,
     DexScreenerProfilesFeed,
     FactoryLaunchFeed,
+    GMGNReadOnlyFeed,
     O1_FACTORIES,
     O1_LAUNCHED_TOPIC,
     OnchainFlowEnricher,
@@ -27,6 +29,7 @@ from scanner.feeds import (
     TRANSFER_TOPIC,
     ZoraExploreFeed,
     _get_json,
+    snapshot_from_fallback,
     platform_factory_specs,
     PAIR_CREATED_TOPIC,
 )
@@ -549,6 +552,113 @@ class DirectFeedSession:
         raise AssertionError(f"Unexpected URL {url}")
 
 
+class GMGNSession:
+    def __init__(self):
+        self.calls = []
+        self.now = int(time.time())
+
+    @staticmethod
+    def _wrapped(data):
+        return {"code": 0, "data": {"code": 0, "data": data}}
+
+    def _quality_row(self, chain, address, launchpad):
+        return {
+            "chain": chain,
+            "address": address,
+            "name": "Useful Project",
+            "symbol": "USEFUL",
+            "price": 0.001,
+            "market_cap": 100_000,
+            "liquidity": 20_000,
+            "volume": 8_000,
+            "swaps": 40,
+            "buys": 28,
+            "sells": 12,
+            "holder_count": 120,
+            "smart_degen_count": 4,
+            "renowned_count": 2,
+            "top_10_holder_rate": 0.20,
+            "rug_ratio": 0,
+            "is_honeypot": 0,
+            "is_wash_trading": False,
+            "buy_tax": "0",
+            "sell_tax": "0",
+            "is_open_source": 1,
+            "is_renounced": 1,
+            "creation_timestamp": self.now - 300,
+            "launchpad_platform": launchpad,
+            "creator": "0x5555555555555555555555555555555555555555",
+            "twitter_username": "https://x.com/useful",
+            "website": "https://useful.example",
+        }
+
+    def get(self, url, **kwargs):
+        self.calls.append(("GET", url, kwargs))
+        chain = kwargs["params"]["chain"]
+        rows = [
+            self._quality_row(
+                chain,
+                TOKEN if chain == "base" else TOKEN_TWO,
+                "bankr" if chain == "base" else "pons_v2",
+            )
+        ]
+        if chain == "robinhood":
+            rows.extend(
+                [
+                    {
+                        **self._quality_row(
+                            chain,
+                            "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                            "pool_robinhood_stock_amm",
+                        ),
+                        "name": "Tesla",
+                        "symbol": "TSLA",
+                    },
+                    {
+                        **self._quality_row(
+                            chain,
+                            "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                            "pons_v2",
+                        ),
+                        "is_honeypot": 1,
+                    },
+                ]
+            )
+        return FakeResponse(self._wrapped({"rank": rows}))
+
+    def post(self, url, **kwargs):
+        self.calls.append(("POST", url, kwargs))
+        if url.endswith("/v1/market/token_signal"):
+            return FakeResponse(
+                self._wrapped(
+                    {
+                        "signals": [
+                            {
+                                "token_address": TOKEN_TWO,
+                                "signal_type": 12,
+                                "trigger_at": self.now,
+                                "cur_data": {
+                                    **self._quality_row(
+                                        "robinhood", TOKEN_TWO, "pons_v2"
+                                    ),
+                                    # Older signal payloads can carry a higher
+                                    # value than the current rank response.
+                                    "market_cap": 250_000,
+                                },
+                            }
+                        ]
+                    }
+                )
+            )
+        chain = kwargs["params"]["chain"]
+        row = self._quality_row(
+            chain,
+            TOKEN if chain == "base" else TOKEN_TWO,
+            "bankr" if chain == "base" else "pons_v2",
+        )
+        return FakeResponse(self._wrapped({"new_creation": {"list": [row]}}))
+
+
 class FeedTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.state = SQLiteState(":memory:")
@@ -584,6 +694,35 @@ class FeedTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload, {"ok": True})
         self.assertEqual(session.calls, 2)
         sleep.assert_awaited_once()
+
+    async def test_gmgn_feed_is_read_only_filters_junk_and_preserves_evidence(self):
+        session = GMGNSession()
+        feed = GMGNReadOnlyFeed(ScannerConfig(gmgn_candidate_limit=20))
+        with patch("scanner.feeds.asyncio.sleep", new=AsyncMock()):
+            rows = await feed.discover(session, self.state)
+
+        by_address = {row.token_address: row for row in rows}
+        self.assertEqual(set(by_address), {TOKEN, TOKEN_TWO})
+        self.assertTrue(by_address[TOKEN].metadata["gmgn_evidence"])
+        self.assertEqual(by_address[TOKEN].metadata["gmgn_launchpad"], "bankr")
+        self.assertEqual(by_address[TOKEN_TWO].metadata["gmgn_recent_smart_signals"], 1)
+        self.assertEqual(
+            by_address[TOKEN_TWO].metadata["gmgn_market"]["market_cap_usd"],
+            100_000,
+        )
+        self.assertEqual(len(session.calls), 5)
+        for _, url, kwargs in session.calls:
+            self.assertIn(url.removeprefix(feed.host), feed.allowed_paths)
+            serialised = str(kwargs).lower()
+            self.assertNotIn("wallet_address", serialised)
+            self.assertNotIn("from_address", serialised)
+            self.assertNotIn("private", serialised)
+
+        snapshot = snapshot_from_fallback(by_address[TOKEN])
+        self.assertIsNotNone(snapshot)
+        self.assertEqual(snapshot.market_cap_usd, 100_000)
+        self.assertEqual(snapshot.holder_count, 120)
+        self.assertEqual(snapshot.raw["security"]["providers"], ["gmgn"])
 
     async def test_pools_fun_and_zora_official_feeds_preserve_provenance(self):
         session = PlatformDiscoverySession()
