@@ -26,10 +26,10 @@ def _setup_summary(snapshot: MarketSnapshot, result: ScoreResult) -> str:
     buy_ratio = snapshot.buys_5m / trades if trades else 0.0
     gmgn = snapshot.raw.get("gmgn") if isinstance(snapshot.raw, dict) else {}
     gmgn = gmgn if isinstance(gmgn, dict) else {}
-    hot_rank = int(gmgn.get("hot_rank") or 0)
+    attention_rank = int(gmgn.get("attention_rank") or 0)
     recent_signal_types = gmgn.get("recent_signal_types") or []
     evidence = [
-        f"GMGN search heat #{hot_rank}" if hot_rank else None,
+        f"GMGN 1m activity #{attention_rank}" if attention_rank else None,
         "fresh GMGN smart/KOL attention" if set(recent_signal_types) & {12, 20} else None,
         "fresh GMGN platform call" if set(recent_signal_types) & {13, 19} else None,
         f"{snapshot.unique_buyers_5m} unique buyers/5m" if snapshot.flow_checked else None,

@@ -110,25 +110,28 @@ class SignalScorer:
         creator_activity = _clamp(float(snapshot.raw.get("creator_activity_score") or 0.0), 0.0, 1.0)
         gmgn = snapshot.raw.get("gmgn") if isinstance(snapshot.raw, dict) else {}
         gmgn = gmgn if isinstance(gmgn, dict) else {}
-        hot_rank = _integer(gmgn.get("hot_rank"))
-        hot_visits = _integer(gmgn.get("hot_visits"))
+        attention_rank = _integer(gmgn.get("attention_rank"))
         recent_signal_types = {
             _integer(value) for value in (gmgn.get("recent_signal_types") or [])
         }
         recent_smart_attention = bool(recent_signal_types & {12, 20})
         recent_platform_attention = bool(recent_signal_types & {13, 19})
-        prior_hot_rank = 0
+        prior_attention_rank = 0
         for item in prior:
             item_gmgn = item.raw.get("gmgn") if isinstance(item.raw, dict) else {}
             item_gmgn = item_gmgn if isinstance(item_gmgn, dict) else {}
-            item_rank = _integer(item_gmgn.get("hot_rank"))
+            item_rank = _integer(item_gmgn.get("attention_rank"))
             if item_rank:
-                prior_hot_rank = item_rank
+                prior_attention_rank = item_rank
                 break
-        hot_rank_gain = max(0, prior_hot_rank - hot_rank) if hot_rank and prior_hot_rank else 0
-        hot_attention = bool(
-            (0 < hot_rank <= 30)
-            or hot_rank_gain >= 5
+        attention_rank_gain = (
+            max(0, prior_attention_rank - attention_rank)
+            if attention_rank and prior_attention_rank
+            else 0
+        )
+        live_attention = bool(
+            (0 < attention_rank <= 30)
+            or attention_rank_gain >= 5
             or recent_smart_attention
             or recent_platform_attention
         )
@@ -173,11 +176,18 @@ class SignalScorer:
             + max(0.0, snapshot.social_velocity) * 0.5, 0.0, 10.0,
         )
         components["live_attention"] = _clamp(
-            (8.0 if 0 < hot_rank <= 5 else 6.0 if hot_rank <= 15 and hot_rank else 4.0 if hot_rank <= 30 and hot_rank else 0.0)
-            + min(2.0, hot_rank_gain / 5.0)
+            (
+                8.0
+                if 0 < attention_rank <= 5
+                else 6.0
+                if attention_rank <= 15 and attention_rank
+                else 4.0
+                if attention_rank <= 30 and attention_rank
+                else 0.0
+            )
+            + min(2.0, attention_rank_gain / 5.0)
             + (4.0 if recent_smart_attention else 0.0)
-            + (3.0 if recent_platform_attention else 0.0)
-            + min(1.0, hot_visits / 500.0),
+            + (3.0 if recent_platform_attention else 0.0),
             0.0,
             10.0,
         )
@@ -214,7 +224,7 @@ class SignalScorer:
         independent_signals = sum((
             buyer_inflecting, holder_inflecting, balance_healthy, dipped_and_absorbed,
             smart_confirmed, social_inflecting, creator_or_narrative, sellable_20_proxy,
-            hot_attention,
+            live_attention,
         ))
 
         blockers: list[str] = []
@@ -473,8 +483,8 @@ class SignalScorer:
             and float(security.get("top_unlocked_eoa_percent") or 0.0) <= 35
             and int(security.get("risk_level") or 0) < 60
         )
-        if not hot_attention:
-            pulse_trigger = "GMGN search heat or a fresh smart/KOL/platform signal appears"
+        if not live_attention:
+            pulse_trigger = "GMGN 1m activity or a fresh smart/KOL/platform signal appears"
         elif pulse_confirmations < 2:
             pulse_trigger = "a second independent confirmation joins the live attention spike"
         elif not buyer_inflecting and not holder_inflecting:
@@ -516,7 +526,7 @@ class SignalScorer:
             and pulse_safety
             and not hard_late
             and not hard_risk
-            and hot_attention
+            and live_attention
             and pulse_confirmations >= 2
             and final_score >= self.config.pulse_alert_score
             and final_score < scout_score
@@ -562,8 +572,8 @@ class SignalScorer:
             "smart_wallet": f"proven wallets +{snapshot.smart_wallet_buys}/-{snapshot.smart_wallet_sells}",
             "exact_ca_social": f"exact-CA mentions {snapshot.exact_ca_mentions_5m}/5m",
             "live_attention": (
-                f"GMGN attention #{hot_rank}"
-                if hot_rank
+                f"GMGN 1m activity #{attention_rank}"
+                if attention_rank
                 else "fresh GMGN smart/KOL/platform attention"
             ),
             "market_quality": "liquidity and sellability quality",

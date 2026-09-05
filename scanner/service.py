@@ -402,8 +402,8 @@ class ScannerService:
             "recent_signal_types": candidate.metadata.get("gmgn_recent_signal_types", []),
             "recent_smart_signals": candidate.metadata.get("gmgn_recent_smart_signals", 0),
             "recent_platform_signals": candidate.metadata.get("gmgn_recent_platform_signals", 0),
-            "hot_rank": candidate.metadata.get("gmgn_hot_rank"),
-            "hot_visits": candidate.metadata.get("gmgn_hot_visits", 0),
+            "attention_rank": candidate.metadata.get("gmgn_attention_rank"),
+            "attention_source": candidate.metadata.get("gmgn_attention_source"),
             "creator_token_count": candidate.metadata.get("gmgn_creator_token_count", 0),
         }
 

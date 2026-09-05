@@ -139,7 +139,7 @@ class AlertFormatTests(unittest.TestCase):
             market_cap_usd=40_000,
             buys_5m=12,
             sells_5m=5,
-            raw={"gmgn": {"hot_rank": 7, "recent_signal_types": [13]}},
+            raw={"gmgn": {"attention_rank": 7, "recent_signal_types": [13]}},
         )
         result = ScoreResult(
             52,
@@ -155,7 +155,7 @@ class AlertFormatTests(unittest.TestCase):
         )
         message = format_alert(candidate, market, result)
         self.assertIn("CHECK NOW — not a buy call", message)
-        self.assertIn("GMGN search heat #7", message)
+        self.assertIn("GMGN 1m activity #7", message)
         self.assertIn("Upgrade trigger", message)
         self.assertNotIn("model upside", message)
 

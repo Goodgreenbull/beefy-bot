@@ -325,7 +325,6 @@ class GMGNReadOnlyFeed:
     name = "gmgn"
     host = "https://openapi.gmgn.ai"
     allowed_paths = {
-        "/v1/market/hot_searches",
         "/v1/market/rank",
         "/v1/market/token_signal",
         "/v1/trenches",
@@ -611,8 +610,7 @@ class GMGNReadOnlyFeed:
         recent_platform_signals = sum(
             signal_type in {13, 19} for signal_type, _ in set(recent_events)
         )
-        hot_rank = _integer(row.get("_gmgn_hot_rank"))
-        hot_visits = _integer(row.get("_gmgn_hot_visits"))
+        attention_rank = _integer(row.get("_gmgn_attention_rank"))
         security = {
             "checked": any(
                 key in row
@@ -660,7 +658,11 @@ class GMGNReadOnlyFeed:
             + min(15.0, total_trades / 10.0)
             + min(10.0, liquidity / 10_000.0)
             + len(recent_signal_types) * 5.0
-            + (12.0 if 0 < hot_rank <= 10 else (7.0 if hot_rank <= 30 else 0.0))
+            + (
+                12.0
+                if 0 < attention_rank <= 10
+                else (7.0 if attention_rank <= 30 else 0.0)
+            )
         )
         return Candidate(
             chain=chain,
@@ -681,17 +683,17 @@ class GMGNReadOnlyFeed:
                 "gmgn_recent_signal_types": recent_signal_types,
                 "gmgn_recent_smart_signals": recent_smart_signals,
                 "gmgn_recent_platform_signals": recent_platform_signals,
-                "gmgn_hot_rank": hot_rank or None,
-                "gmgn_hot_visits": hot_visits,
+                "gmgn_attention_rank": attention_rank or None,
+                "gmgn_attention_source": "1m-activity" if attention_rank else None,
                 "gmgn_creator_token_count": _integer(row.get("twitter_create_token_count")),
                 "profile_social_links": social_links,
                 "gmgn_market": {
                     "price_usd": price or None,
                     "liquidity_usd": liquidity,
                     "market_cap_usd": market_cap,
-                    "volume_5m_usd": _number(row.get("volume")) if route_names & {"rank", "hot"} else 0.0,
-                    "buys_5m": buys if route_names & {"rank", "hot"} else 0,
-                    "sells_5m": sells if route_names & {"rank", "hot"} else 0,
+                    "volume_5m_usd": _number(row.get("volume")) if route_names & {"rank", "attention"} else 0.0,
+                    "buys_5m": buys if route_names & {"rank", "attention"} else 0,
+                    "sells_5m": sells if route_names & {"rank", "attention"} else 0,
                     "holder_count": holder_count or None,
                     "price_change_5m": _number(row.get("price_change_percent5m")),
                     "price_change_1h": _number(row.get("price_change_percent1h")),
@@ -764,36 +766,22 @@ class GMGNReadOnlyFeed:
                 },
             ),
             (
-                "gmgn-hot-attention",
-                "multi",
-                "hot",
-                "POST",
-                "/v1/market/hot_searches",
-                {},
-                {
-                    "params": [
-                        {
-                            "label": "beefy-hot-base",
-                            "chain": "base",
-                            "interval": "5m",
-                            "filters": ["not_honeypot", "verified", "renounced"],
-                            "limit": 40,
-                            "min_liquidity": self.config.min_liquidity_usd,
-                            "min_marketcap": 3_000,
-                            "max_marketcap": self.config.max_market_cap_usd,
-                        },
-                        {
-                            "label": "beefy-hot-robinhood",
-                            "chain": "robinhood",
-                            "interval": "5m",
-                            "filters": ["not_honeypot", "verified", "renounced"],
-                            "limit": 40,
-                            "min_liquidity": self.config.min_liquidity_usd,
-                            "min_marketcap": 3_000,
-                            "max_marketcap": self.config.max_market_cap_usd,
-                        },
-                    ]
-                },
+                "gmgn-base-attention",
+                "base",
+                "attention",
+                "GET",
+                "/v1/market/rank",
+                {"chain": "base", "interval": "1m", "limit": 40, "order_by": "swaps", "direction": "desc"},
+                None,
+            ),
+            (
+                "gmgn-robinhood-attention",
+                "robinhood",
+                "attention",
+                "GET",
+                "/v1/market/rank",
+                {"chain": "robinhood", "interval": "1m", "limit": 40, "order_by": "swaps", "direction": "desc"},
+                None,
             ),
         ]
         aggregated: dict[str, dict[str, Any]] = {}
@@ -826,33 +814,11 @@ class GMGNReadOnlyFeed:
                 )
                 self._merge_row(bucket["row"], row)
                 bucket["routes"].add(route)
-                if route == "hot":
-                    for field in (
-                        "price",
-                        "market_cap",
-                        "marketcap",
-                        "mc",
-                        "liquidity",
-                        "liquidity_usd",
-                        "volume",
-                        "swaps",
-                        "buys",
-                        "sells",
-                        "holder_count",
-                        "price_change_percent5m",
-                        "price_change_percent1h",
-                        "price_change_percent24h",
-                    ):
-                        if row.get(field) not in (None, ""):
-                            bucket["row"][field] = row[field]
-                    hot_rank = _integer(row.get("rank"), position)
-                    previous_rank = _integer(bucket["row"].get("_gmgn_hot_rank"))
-                    if hot_rank and (not previous_rank or hot_rank < previous_rank):
-                        bucket["row"]["_gmgn_hot_rank"] = hot_rank
-                    bucket["row"]["_gmgn_hot_visits"] = max(
-                        _integer(bucket["row"].get("_gmgn_hot_visits")),
-                        _integer(row.get("visiting_count")),
-                    )
+                if route == "attention":
+                    attention_rank = _integer(row.get("rank"), position)
+                    previous_rank = _integer(bucket["row"].get("_gmgn_attention_rank"))
+                    if attention_rank and (not previous_rank or attention_rank < previous_rank):
+                        bucket["row"]["_gmgn_attention_rank"] = attention_rank
                 signal_type = _integer(row.get("signal_type"))
                 trigger_at = _integer(row.get("trigger_at"))
                 if signal_type and trigger_at:

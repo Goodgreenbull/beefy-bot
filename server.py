@@ -882,27 +882,27 @@ async def health():
     if scanner_service is None:
         return {"bot": "ok", "scanner": "disabled", "release": release}
     status = scanner_service.status()
-    hot_attention = next(
-        (
-            item
-            for item in status.get("feeds", [])
-            if item.get("feed_name") == "gmgn-hot-attention"
-        ),
-        {},
-    )
-    if hot_attention.get("last_error"):
-        hot_attention_status = "error"
-    elif hot_attention.get("last_success_at"):
-        hot_attention_status = "healthy"
+    attention_feeds = [
+        item
+        for item in status.get("feeds", [])
+        if item.get("feed_name")
+        in {"gmgn-base-attention", "gmgn-robinhood-attention"}
+    ]
+    if any(item.get("last_error") for item in attention_feeds):
+        attention_status = "error"
+    elif len(attention_feeds) == 2 and all(
+        item.get("last_success_at") for item in attention_feeds
+    ):
+        attention_status = "healthy"
     else:
-        hot_attention_status = "pending"
+        attention_status = "pending"
     return {
         "bot": "ok",
         "scanner": "running" if scanner_config.enabled else "disabled",
         "release": release,
         "last_cycle_at": status.get("last_cycle_at"),
         "gmgn_candidates": status.get("gmgn_candidates", 0),
-        "gmgn_hot_attention": hot_attention_status,
+        "gmgn_live_attention": attention_status,
         "pulses_24h": status.get("pulses_24h", 0),
         "protects_24h": status.get("protects_24h", 0),
         "feeds_with_errors": status.get("errors", 0),

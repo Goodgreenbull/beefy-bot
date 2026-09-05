@@ -413,7 +413,7 @@ class SignalScorerTests(unittest.TestCase):
         self.assertNotIn(result.signal, {"ACTION", "A+"})
         self.assertLess(result.score, 70)
 
-    def test_gmgn_hot_attention_can_emit_a_guarded_pulse(self):
+    def test_gmgn_live_attention_can_emit_a_guarded_pulse(self):
         config = ScannerConfig(pulse_alert_score=48)
         scorer = SignalScorer(config)
         candidate = Candidate(
@@ -448,8 +448,7 @@ class SignalScorerTests(unittest.TestCase):
                     "top_unlocked_eoa_percent": 20,
                 },
                 "gmgn": {
-                    "hot_rank": 9,
-                    "hot_visits": 500,
+                    "attention_rank": 9,
                     "recent_signal_types": [13],
                 },
             },
@@ -459,7 +458,7 @@ class SignalScorerTests(unittest.TestCase):
                 buys_5m=4,
                 sells_5m=4,
                 price_usd=0.001,
-                raw={"security": CLEAN_SECURITY, "gmgn": {"hot_rank": 24}},
+                raw={"security": CLEAN_SECURITY, "gmgn": {"attention_rank": 24}},
             )
         ]
         result = scorer.score(candidate, market, history, now=NOW)
@@ -480,7 +479,7 @@ class SignalScorerTests(unittest.TestCase):
             price_change_5m=70,
             raw={
                 "security": CLEAN_SECURITY | {"top_unlocked_eoa_percent": 42},
-                "gmgn": {"hot_rank": 2, "recent_signal_types": [12, 13]},
+                "gmgn": {"attention_rank": 2, "recent_signal_types": [12, 13]},
             },
         )
         result = self.scorer.score(candidate, unsafe, [], now=NOW)
