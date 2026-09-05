@@ -370,6 +370,7 @@ class GMGNReadOnlyFeed:
         self.base_platforms = list(config.gmgn_base_platforms)
         self._request_lock = asyncio.Lock()
         self._last_request_at = 0.0
+        self._cooldown_until = 0.0
 
     @staticmethod
     def _unwrap(payload: Any) -> Any:
@@ -398,6 +399,12 @@ class GMGNReadOnlyFeed:
             raise RuntimeError(f"refusing non-read-only GMGN path: {path}")
         if not self.api_key:
             raise RuntimeError("GMGN read-only API key is not configured")
+        now_epoch = datetime.now(timezone.utc).timestamp()
+        if now_epoch < self._cooldown_until:
+            retry_at = datetime.fromtimestamp(self._cooldown_until, tz=timezone.utc)
+            raise RuntimeError(
+                f"GMGN rate limited; retry after {retry_at.isoformat()}"
+            )
         params = {
             **query,
             "timestamp": int(datetime.now(timezone.utc).timestamp()),
@@ -411,28 +418,71 @@ class GMGNReadOnlyFeed:
             "User-Agent": "gmgn-cli/1.5.6",
         }
         async with self._request_lock:
-            for attempt in range(3):
-                elapsed = asyncio.get_running_loop().time() - self._last_request_at
-                if elapsed < 0.08:
-                    await asyncio.sleep(0.08 - elapsed)
-                request = session.post if method == "POST" else session.get
-                kwargs: dict[str, Any] = {"params": params, "headers": headers}
-                if body is not None:
-                    kwargs["json"] = body
-                async with request(f"{self.host}{path}", **kwargs) as response:
-                    self._last_request_at = asyncio.get_running_loop().time()
-                    if response.status == 429:
-                        retry_header = getattr(response, "headers", {}).get("Retry-After")
+            elapsed = asyncio.get_running_loop().time() - self._last_request_at
+            if elapsed < 0.08:
+                await asyncio.sleep(0.08 - elapsed)
+            request = session.post if method == "POST" else session.get
+            kwargs: dict[str, Any] = {"params": params, "headers": headers}
+            if body is not None:
+                kwargs["json"] = body
+            async with request(f"{self.host}{path}", **kwargs) as response:
+                self._last_request_at = asyncio.get_running_loop().time()
+                if response.status == 429:
+                    response_headers = getattr(response, "headers", {})
+                    reset_header = response_headers.get("X-RateLimit-Reset")
+                    retry_header = response_headers.get("Retry-After")
+                    reset_at = 0.0
+                    try:
+                        reset_at = float(reset_header)
+                    except (TypeError, ValueError):
+                        pass
+                    try:
+                        payload = await response.json(content_type=None)
+                    except Exception:
+                        payload = {}
+                    if isinstance(payload, dict):
                         try:
-                            retry_after = float(retry_header)
+                            reset_at = max(reset_at, float(payload.get("reset_at") or 0))
                         except (TypeError, ValueError):
-                            retry_after = 0.8 * (2 ** attempt)
-                    elif response.status >= 400:
-                        raise RuntimeError(f"GMGN {path} HTTP {response.status}")
-                    else:
-                        return self._unwrap(await response.json(content_type=None))
-                await asyncio.sleep(min(4.0, max(0.5, retry_after)))
-        raise RuntimeError(f"GMGN {path} rate limited after retries")
+                            pass
+                    try:
+                        retry_after = float(retry_header)
+                    except (TypeError, ValueError):
+                        retry_after = 0.0
+                    reset_at = max(
+                        reset_at,
+                        datetime.now(timezone.utc).timestamp() + retry_after,
+                        datetime.now(timezone.utc).timestamp() + 300.0,
+                    )
+                    self._cooldown_until = reset_at
+                    retry_at = datetime.fromtimestamp(reset_at, tz=timezone.utc)
+                    raise RuntimeError(
+                        f"GMGN rate limited; retry after {retry_at.isoformat()}"
+                    )
+                if response.status in {401, 403}:
+                    self._cooldown_until = datetime.now(timezone.utc).timestamp() + 300.0
+                    retry_at = datetime.fromtimestamp(self._cooldown_until, tz=timezone.utc)
+                    raise RuntimeError(
+                        f"GMGN temporarily unavailable (HTTP {response.status}); "
+                        f"retry after {retry_at.isoformat()}"
+                    )
+                if response.status >= 400:
+                    raise RuntimeError(f"GMGN {path} HTTP {response.status}")
+                payload = await response.json(content_type=None)
+                if isinstance(payload, dict) and str(payload.get("code")) == "429":
+                    try:
+                        reset_at = float(payload.get("reset_at") or 0)
+                    except (TypeError, ValueError):
+                        reset_at = 0.0
+                    self._cooldown_until = max(
+                        reset_at,
+                        datetime.now(timezone.utc).timestamp() + 300.0,
+                    )
+                    retry_at = datetime.fromtimestamp(self._cooldown_until, tz=timezone.utc)
+                    raise RuntimeError(
+                        f"GMGN rate limited; retry after {retry_at.isoformat()}"
+                    )
+                return self._unwrap(payload)
 
     def _trenches_body(
         self, chain: str, platforms: list[str] | None = None
@@ -798,6 +848,11 @@ class GMGNReadOnlyFeed:
             except Exception as error:
                 state.mark_feed_error(health_name, error)
                 first_error = first_error or error
+                if any(
+                    phrase in str(error).lower()
+                    for phrase in ("rate limited", "temporarily unavailable")
+                ):
+                    break
                 continue
             for position, raw in enumerate(rows, start=1):
                 row = self._flatten_row(raw)

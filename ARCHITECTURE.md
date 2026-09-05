@@ -18,7 +18,7 @@ manual + learned smart wallets ────────────────�
                                       MFE/MAE + calibration + PROTECT warnings
 ```
 
-Every external feed is isolated. One failing provider is recorded in `feed_health` but does not stop the remaining feeds or the next cycle.
+Every external feed is isolated. One failing provider is recorded in `feed_health` but does not stop the remaining feeds or the next cycle. GMGN additionally opens a five-minute circuit breaker on a 429/401/403 so the shared free credential is not hammered during a provider cooldown.
 
 ## Direct discovery
 

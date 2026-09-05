@@ -659,6 +659,18 @@ class GMGNSession:
         return FakeResponse(self._wrapped({"new_creation": {"list": [row]}}))
 
 
+class GMGNCooldownSession:
+    def __init__(self):
+        self.calls = 0
+
+    def get(self, url, **kwargs):
+        self.calls += 1
+        return FakeResponse({}, status=403)
+
+    def post(self, url, **kwargs):
+        raise AssertionError("GMGN should stop the cycle after the first access rejection")
+
+
 class FeedTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.state = SQLiteState(":memory:")
@@ -725,6 +737,18 @@ class FeedTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(snapshot.market_cap_usd, 100_000)
         self.assertEqual(snapshot.holder_count, 120)
         self.assertEqual(snapshot.raw["security"]["providers"], ["gmgn"])
+
+    async def test_gmgn_access_rejection_stops_the_cycle_and_honours_cooldown(self):
+        session = GMGNCooldownSession()
+        feed = GMGNReadOnlyFeed(ScannerConfig())
+
+        with self.assertRaisesRegex(RuntimeError, "temporarily unavailable"):
+            await feed.discover(session, self.state)
+        self.assertEqual(session.calls, 1)
+
+        with self.assertRaisesRegex(RuntimeError, "rate limited"):
+            await feed.discover(session, self.state)
+        self.assertEqual(session.calls, 1)
 
     async def test_pools_fun_and_zora_official_feeds_preserve_provenance(self):
         session = PlatformDiscoverySession()
