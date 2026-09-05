@@ -215,6 +215,7 @@ class SQLiteStateTests(unittest.TestCase):
             self.candidate.key, sent_at + timedelta(minutes=18)
         )
         self.assertEqual(inserted, 1)
+        self.assertTrue(self.state.market_missing_confirmed(self.candidate.key, 3))
         outcome = self.state.connection.execute(
             "SELECT return_pct FROM alert_outcomes WHERE alert_id = ? AND horizon_minutes = 15",
             (alert_id,),
@@ -400,3 +401,51 @@ class SQLiteStateTests(unittest.TestCase):
         self.assertGreater(current.target_multiple or 0, 5.0)
         self.assertEqual(current.target_confidence, "LOW")
         self.assertIn("5 comparable 24h outcomes", current.target_basis)
+
+    def test_pulse_deduplicates_but_allows_one_meaningful_quality_upgrade(self):
+        pulse = ScoreResult(50, "IGNITION", "PULSE", True, 0, {}, [], [], "test")
+        self.state.record_alert(
+            self.candidate.key,
+            pulse,
+            MarketSnapshot(chain="base", token_address=TOKEN, price_usd=1.0),
+        )
+        self.state.connection.execute(
+            "UPDATE alerts SET sent_at = ?",
+            ((datetime.now(timezone.utc) - timedelta(minutes=50)).isoformat(),),
+        )
+        self.state.connection.commit()
+        repeat = ScoreResult(58, "IGNITION", "PULSE", True, 0, {}, [], [], "test")
+        action = ScoreResult(72, "IGNITION", "ACTION", True, 0, {}, [], [], "test")
+        self.assertFalse(self.state.alert_allowed(self.candidate.key, repeat, 45, 10))
+        self.assertTrue(self.state.alert_allowed(self.candidate.key, action, 45, 10))
+
+    def test_protect_warning_is_material_and_one_shot(self):
+        call = ScoreResult(74, "IGNITION", "ACTION", True, 0, {}, [], [], "test")
+        alert_id = self.state.record_alert(
+            self.candidate.key,
+            call,
+            MarketSnapshot(
+                chain="base",
+                token_address=TOKEN,
+                price_usd=1.0,
+                liquidity_usd=10_000,
+            ),
+        )
+        self.state.connection.execute(
+            "UPDATE alerts SET sent_at = ? WHERE id = ?",
+            ((datetime.now(timezone.utc) - timedelta(minutes=10)).isoformat(), alert_id),
+        )
+        self.state.connection.commit()
+        deterioration = MarketSnapshot(
+            chain="base",
+            token_address=TOKEN,
+            price_usd=0.55,
+            liquidity_usd=5_000,
+            buys_5m=2,
+            sells_5m=8,
+        )
+        protection = self.state.protection_needed(self.candidate.key, deterioration)
+        self.assertIsNotNone(protection)
+        self.assertIn("liquidity fell", " ".join(protection["reasons"]))
+        self.state.record_protection(self.candidate.key, protection)
+        self.assertIsNone(self.state.protection_needed(self.candidate.key, deterioration))

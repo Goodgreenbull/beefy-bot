@@ -20,7 +20,7 @@ from telegram.ext import (
 )
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from scanner import ScannerConfig, ScannerService, SQLiteState
-from scanner.alerts import format_alert
+from scanner.alerts import format_alert, format_protect_alert
 from scanner.models import Candidate, MarketSnapshot, ScoreResult
 
 TOKEN             = os.getenv("BOT_TOKEN")
@@ -464,6 +464,7 @@ async def scannerstatus_command(update: Update, context: ContextTypes.DEFAULT_TY
     )
     funnel_text = (
         f"\nFunnel: {funnel.get('screened', 0)} scored · "
+        f"48+ {funnel.get('score_48_plus', 0)} · "
         f"55+ {funnel.get('score_55_plus', 0)} · "
         f"40–54 {funnel.get('score_40_54', 0)}"
         + (f"\nMain blockers: {blocker_text}" if blocker_text else "")
@@ -475,9 +476,12 @@ async def scannerstatus_command(update: Update, context: ContextTypes.DEFAULT_TY
         f"Candidates (24h): {status.get('candidates_24h', 0)}\n"
         f"GMGN-qualified this cycle: {status.get('gmgn_candidates', 0)}\n"
         f"Snapshots (24h): {status.get('snapshots_24h', 0)}\n"
-        f"Alerts (24h): {status.get('alerts_24h', 0)}\n"
+        f"Alerts (24h): {status.get('alerts_24h', 0)} "
+        f"(PULSE {status.get('pulses_24h', 0)})\n"
+        f"PROTECT warnings (24h): {status.get('protects_24h', 0)}\n"
         f"Outcome observations (24h): {status.get('outcomes_24h', 0)}\n"
-        f"Exceptional-flow/SCOUT/ACTION/A+ thresholds: "
+        f"PULSE/exceptional-flow/SCOUT/ACTION/A+ thresholds: "
+        f"{scanner_config.pulse_alert_score:.0f}/"
         f"{status.get('exceptional_scout_threshold', scanner_config.exceptional_scout_score):.0f}/"
         f"{status.get('scout_threshold', scanner_config.scout_alert_score):.0f}/"
         f"{status.get('watch_threshold', scanner_config.min_alert_score):.0f}/"
@@ -519,14 +523,15 @@ async def signalstats_command(update: Update, context: ContextTypes.DEFAULT_TYPE
             f"6h {counts.get(360, 0)} · 24h {counts.get(1440, 0)}"
         ),
         (
-            f"Current exceptional/SCOUT/ACTION/A+: "
+            f"Current PULSE/exceptional/SCOUT/ACTION/A+: "
+            f"{scanner_config.pulse_alert_score:.0f}/"
             f"{status.get('exceptional_scout_threshold', scanner_config.exceptional_scout_score):.0f}/"
             f"{status.get('scout_threshold', scanner_config.scout_alert_score):.0f}/"
             f"{status.get('watch_threshold', scanner_config.min_alert_score):.0f}/"
             f"{status.get('buy_threshold', scanner_config.strong_alert_score):.0f}"
         ),
     ]
-    for signal in ("SCOUT", "ACTION", "A+"):
+    for signal in ("PULSE", "SCOUT", "ACTION", "A+"):
         metrics = (signals.get(signal) or {}).get(1440)
         if metrics:
             lines.append(
@@ -635,6 +640,19 @@ async def send_first_leg_alert(
     await application.bot.send_message(
         chat_id=telegram_chat_target(scanner_config.alert_chat_id),
         text=format_alert(candidate, snapshot, result),
+        parse_mode="HTML",
+        disable_web_page_preview=True,
+    )
+
+
+async def send_protect_alert(candidate: Candidate, snapshot: MarketSnapshot, protection: dict):
+    if not scanner_config.alert_chat_id:
+        raise RuntimeError(
+            "SIGNAL_TELEGRAM_CHAT_ID, ADMIN_CHAT_ID, or TELEGRAM_GROUP_ID is not set"
+        )
+    await application.bot.send_message(
+        chat_id=telegram_chat_target(scanner_config.alert_chat_id),
+        text=format_protect_alert(candidate, snapshot, protection),
         parse_mode="HTML",
         disable_web_page_preview=True,
     )
@@ -870,6 +888,8 @@ async def health():
         "release": release,
         "last_cycle_at": status.get("last_cycle_at"),
         "gmgn_candidates": status.get("gmgn_candidates", 0),
+        "pulses_24h": status.get("pulses_24h", 0),
+        "protects_24h": status.get("protects_24h", 0),
         "feeds_with_errors": status.get("errors", 0),
     }
 
@@ -933,7 +953,12 @@ async def on_startup():
     )
     if scanner_config.enabled:
         scanner_state = SQLiteState(scanner_config.state_db)
-        scanner_service = ScannerService(scanner_config, scanner_state, send_first_leg_alert)
+        scanner_service = ScannerService(
+            scanner_config,
+            scanner_state,
+            send_first_leg_alert,
+            send_protect_alert,
+        )
         await scanner_service.start()
         scheduler.add_job(
             scanner_service.run_cycle,

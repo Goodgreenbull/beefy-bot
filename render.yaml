@@ -13,6 +13,8 @@ services:
         value: "300"
       - key: SCANNER_ACTIVE_LIMIT
         value: "50"
+      - key: SCANNER_PULSE_ALERT_SCORE
+        value: "48"
       - key: SCANNER_MIN_ALERT_SCORE
         value: "70"
       - key: SCANNER_STRONG_ALERT_SCORE
@@ -23,6 +25,10 @@ services:
         value: "55"
       - key: SCANNER_MAX_ALERTS_PER_CYCLE
         value: "3"
+      - key: SCANNER_MAX_PULSE_ALERTS_PER_CYCLE
+        value: "1"
+      - key: SCANNER_MAX_PROTECT_ALERTS_PER_CYCLE
+        value: "2"
       - key: SCANNER_TOKEN_REALERT_HOURS
         value: "24"
       - key: SCANNER_WARMUP_CYCLES

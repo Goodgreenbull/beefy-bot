@@ -1,6 +1,6 @@
 import unittest
 
-from scanner.alerts import format_alert
+from scanner.alerts import format_alert, format_protect_alert
 from scanner.models import Candidate, MarketSnapshot, ScoreResult
 
 
@@ -123,3 +123,66 @@ class AlertFormatTests(unittest.TestCase):
         self.assertIn("10.4x model upside", message)
         self.assertIn("[HIGH]", message)
         self.assertIn("24 comparable 24h outcomes", message)
+
+    def test_pulse_is_an_explicit_breadcrumb_without_a_price_target(self):
+        candidate = Candidate(
+            chain="base",
+            token_address="0x3333333333333333333333333333333333333333",
+            source="gmgn",
+            symbol="PING",
+        )
+        market = MarketSnapshot(
+            chain="base",
+            token_address=candidate.token_address,
+            price_usd=0.001,
+            liquidity_usd=8_000,
+            market_cap_usd=40_000,
+            buys_5m=12,
+            sells_5m=5,
+            raw={"gmgn": {"hot_rank": 7, "recent_signal_types": [13]}},
+        )
+        result = ScoreResult(
+            52,
+            "IGNITION",
+            "PULSE",
+            True,
+            0,
+            {},
+            ["GMGN attention #7"],
+            [],
+            "buy share weakens",
+            upgrade_trigger="5m buyers start accelerating",
+        )
+        message = format_alert(candidate, market, result)
+        self.assertIn("CHECK NOW — not a buy call", message)
+        self.assertIn("GMGN search heat #7", message)
+        self.assertIn("Upgrade trigger", message)
+        self.assertNotIn("model upside", message)
+
+    def test_protect_warning_names_the_material_change(self):
+        candidate = Candidate(
+            chain="robinhood",
+            token_address="0x4444444444444444444444444444444444444444",
+            source="pons-v2",
+            name="Risky & Co",
+            symbol="RISK",
+        )
+        market = MarketSnapshot(
+            chain="robinhood",
+            token_address=candidate.token_address,
+            liquidity_usd=3_000,
+            market_cap_usd=20_000,
+        )
+        message = format_protect_alert(
+            candidate,
+            market,
+            {
+                "original_signal": "ACTION",
+                "return_pct": -52.5,
+                "reasons": ["liquidity fell at least 40% from the alert"],
+            },
+        )
+        self.assertIn("BEEFY PROTECT", message)
+        self.assertIn("-52.5% from alert", message)
+        self.assertIn("Risky &amp; Co", message)
+        self.assertIn("protect capital", message)

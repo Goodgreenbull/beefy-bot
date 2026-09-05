@@ -2,7 +2,7 @@ import unittest
 from datetime import datetime, timedelta, timezone
 
 from scanner.config import ScannerConfig
-from scanner.models import Candidate, MarketSnapshot
+from scanner.models import Candidate, MarketSnapshot, ScoreResult
 from scanner.service import ScannerService
 from scanner.state import SQLiteState
 
@@ -63,6 +63,30 @@ class FakeEnricher:
         )
 
 
+class RankedFeed:
+    name = "ranked-launches"
+
+    async def discover(self, session, state):
+        return [
+            Candidate(chain="base", token_address=f"0x{901:040x}", source="bankr", symbol="LOW"),
+            Candidate(chain="base", token_address=f"0x{902:040x}", source="bankr", symbol="HIGH"),
+        ]
+
+
+class RankedEnricher(FakeEnricher):
+    async def enrich(self, session, candidate):
+        market = await super().enrich(session, candidate)
+        market.token_address = candidate.token_address
+        return market
+
+
+class FixedRankScorer:
+    def score(self, candidate, snapshot, history, **kwargs):
+        if candidate.symbol == "HIGH":
+            return ScoreResult(84, "IGNITION", "A+", True, 0, {}, ["best"], [], "test")
+        return ScoreResult(62, "IGNITION", "SCOUT", True, 0, {}, ["lower"], [], "test")
+
+
 class ScannerServiceTests(unittest.IsolatedAsyncioTestCase):
     async def test_live_feed_set_replaces_clanker_and_zora_with_gmgn(self):
         state = SQLiteState(":memory:")
@@ -97,8 +121,9 @@ class ScannerServiceTests(unittest.IsolatedAsyncioTestCase):
         )
         snapshot = MarketSnapshot(chain="robinhood", token_address=TOKEN)
         ScannerService._apply_gmgn_evidence(candidate, snapshot)
-        self.assertEqual(snapshot.smart_wallet_buys, 1)
+        self.assertEqual(snapshot.smart_wallet_buys, 0)
         self.assertEqual(snapshot.raw["gmgn"]["smart_count"], 100)
+        self.assertEqual(snapshot.raw["gmgn"]["recent_smart_signals"], 1)
         self.assertEqual(snapshot.holder_count, 200)
 
     async def test_active_selection_reserves_chain_and_platform_lanes(self):
@@ -169,6 +194,26 @@ class ScannerServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(alerts), 1)
         self.assertEqual(alerts[0][0], f"base:{TOKEN}")
         self.assertIsNone(telegram_health["last_error"])
+
+    async def test_cycle_uses_limited_alert_slots_for_best_candidate_first(self):
+        state = SQLiteState(":memory:")
+        config = ScannerConfig(active_candidate_limit=5, max_alerts_per_cycle=1, warmup_cycles=0)
+        alerts = []
+
+        async def capture(candidate, market, score):
+            alerts.append((candidate.symbol, score.signal))
+
+        service = ScannerService(config, state, capture)
+        service.feeds = [RankedFeed()]
+        service.enricher = RankedEnricher()
+        service.scorer = FixedRankScorer()
+        try:
+            status = await service.run_cycle()
+        finally:
+            await service.stop()
+
+        self.assertEqual(status["alerts"], 1)
+        self.assertEqual(alerts, [("HIGH", "A+")])
 
     async def test_fresh_deploy_backlog_cannot_repeat_as_a_new_launch(self):
         state = SQLiteState(":memory:")

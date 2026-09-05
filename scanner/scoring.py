@@ -110,6 +110,28 @@ class SignalScorer:
         creator_activity = _clamp(float(snapshot.raw.get("creator_activity_score") or 0.0), 0.0, 1.0)
         gmgn = snapshot.raw.get("gmgn") if isinstance(snapshot.raw, dict) else {}
         gmgn = gmgn if isinstance(gmgn, dict) else {}
+        hot_rank = _integer(gmgn.get("hot_rank"))
+        hot_visits = _integer(gmgn.get("hot_visits"))
+        recent_signal_types = {
+            _integer(value) for value in (gmgn.get("recent_signal_types") or [])
+        }
+        recent_smart_attention = bool(recent_signal_types & {12, 20})
+        recent_platform_attention = bool(recent_signal_types & {13, 19})
+        prior_hot_rank = 0
+        for item in prior:
+            item_gmgn = item.raw.get("gmgn") if isinstance(item.raw, dict) else {}
+            item_gmgn = item_gmgn if isinstance(item_gmgn, dict) else {}
+            item_rank = _integer(item_gmgn.get("hot_rank"))
+            if item_rank:
+                prior_hot_rank = item_rank
+                break
+        hot_rank_gain = max(0, prior_hot_rank - hot_rank) if hot_rank and prior_hot_rank else 0
+        hot_attention = bool(
+            (0 < hot_rank <= 30)
+            or hot_rank_gain >= 5
+            or recent_smart_attention
+            or recent_platform_attention
+        )
 
         components: dict[str, float] = {}
         if age_minutes <= 15:
@@ -150,6 +172,15 @@ class SignalScorer:
             + max(0.0, exact_ca_acceleration - 1.0) * 2.0
             + max(0.0, snapshot.social_velocity) * 0.5, 0.0, 10.0,
         )
+        components["live_attention"] = _clamp(
+            (8.0 if 0 < hot_rank <= 5 else 6.0 if hot_rank <= 15 and hot_rank else 4.0 if hot_rank <= 30 and hot_rank else 0.0)
+            + min(2.0, hot_rank_gain / 5.0)
+            + (4.0 if recent_smart_attention else 0.0)
+            + (3.0 if recent_platform_attention else 0.0)
+            + min(1.0, hot_visits / 500.0),
+            0.0,
+            10.0,
+        )
         sell_simulation = bool(security.get("sell_simulation_success"))
         clean_tax = float(security.get("buy_tax") or 0.0) < 5 and float(security.get("sell_tax") or 0.0) < 5
         components["market_quality"] = _clamp(
@@ -183,6 +214,7 @@ class SignalScorer:
         independent_signals = sum((
             buyer_inflecting, holder_inflecting, balance_healthy, dipped_and_absorbed,
             smart_confirmed, social_inflecting, creator_or_narrative, sellable_20_proxy,
+            hot_attention,
         ))
 
         blockers: list[str] = []
@@ -193,6 +225,11 @@ class SignalScorer:
             blockers.append(str(identity.get("reason") or "copycat identity overlap"))
             if risk_penalty >= 20:
                 hard_risk = True
+        if _integer(identity.get("exact_both")) >= 1:
+            hard_risk = True
+        if _integer(identity.get("serial_deployer_launches")) >= 5:
+            blockers.append("deployer is mass-launching recent tokens")
+            hard_risk = True
         if identity.get("blocked_theme"):
             hard_risk = True
         gmgn_creator_tokens = _integer(gmgn.get("creator_token_count"), 0)
@@ -356,7 +393,12 @@ class SignalScorer:
             # A verified launch source is enough for a tightly-scoped SCOUT, but
             # never let provenance substitute for the independent ACTION screen.
             final_score = min(final_score, max(0.0, action_score - 0.1))
-        hard_late = anti_late_penalty >= 35.0
+        hard_late = bool(
+            anti_late_penalty >= 35.0
+            or local_multiple >= 2.0
+            or snapshot.price_change_5m >= 60
+            or snapshot.price_change_1h >= 150
+        )
         has_price = snapshot.price_usd is not None and snapshot.price_usd > 0
         if not has_price:
             blockers.append("reliable USD price unavailable")
@@ -411,6 +453,39 @@ class SignalScorer:
         elif not sellable_20_proxy:
             upgrade_trigger = "the free sell simulation confirms clean sellability with tax below 5%"
 
+        pulse_confirmations = sum(
+            (
+                buyer_inflecting,
+                holder_inflecting,
+                balance_healthy,
+                dipped_and_absorbed,
+                creator_or_narrative,
+                snapshot.social_links >= 2,
+                recent_smart_attention,
+                recent_platform_attention,
+            )
+        )
+        pulse_safety = bool(
+            security.get("checked")
+            and security.get("open_source") is not False
+            and float(security.get("buy_tax") or 0.0) < 5
+            and float(security.get("sell_tax") or 0.0) < 5
+            and float(security.get("top_unlocked_eoa_percent") or 0.0) <= 35
+            and int(security.get("risk_level") or 0) < 60
+        )
+        if not hot_attention:
+            pulse_trigger = "GMGN search heat or a fresh smart/KOL/platform signal appears"
+        elif pulse_confirmations < 2:
+            pulse_trigger = "a second independent confirmation joins the live attention spike"
+        elif not buyer_inflecting and not holder_inflecting:
+            pulse_trigger = "5m buyer or holder growth starts accelerating"
+        elif not action_project_evidence:
+            pulse_trigger = "a verified product/social profile or proven wallet entry appears"
+        elif not contract_screen_complete:
+            pulse_trigger = "the independent contract screen confirms no dangerous admin controls"
+        else:
+            pulse_trigger = upgrade_trigger or "the score reaches the 60/100 SCOUT quality floor"
+
         common_gate = basic_quality and project_evidence and safety_complete and not hard_late and not hard_risk
         action_eligible = (
             common_gate and contract_screen_complete and action_project_evidence
@@ -436,7 +511,27 @@ class SignalScorer:
             and upgrade_trigger is not None
         )
         scout_eligible = standard_scout or exceptional_scout
-        eligible = a_plus_quality or action_eligible or scout_eligible
+        pulse_eligible = bool(
+            basic_quality
+            and pulse_safety
+            and not hard_late
+            and not hard_risk
+            and hot_attention
+            and pulse_confirmations >= 2
+            and final_score >= self.config.pulse_alert_score
+            and final_score < scout_score
+            and txns_5m >= 8
+            and buy_ratio >= 0.55
+            and local_multiple < 1.90
+            and snapshot.price_change_5m < 45
+            and (
+                candidate.deployer
+                or snapshot.social_links >= 1
+                or recent_smart_attention
+                or recent_platform_attention
+            )
+        )
+        eligible = a_plus_quality or action_eligible or scout_eligible or pulse_eligible
 
         reawakening = age_minutes > 360 and (buyer_acceleration >= 1.5 or volume_acceleration >= 1.5) and buy_ratio >= 0.55
         stage = "REAWAKENING" if reawakening else ("IGNITION" if age_minutes <= 360 else "WATCH")
@@ -446,6 +541,8 @@ class SignalScorer:
             signal = "ACTION"
         elif scout_eligible:
             signal = "SCOUT"
+        elif pulse_eligible:
+            signal = "PULSE"
         elif hard_late:
             signal = "AVOID LATE"
         else:
@@ -464,6 +561,11 @@ class SignalScorer:
             "balance_absorption": f"{buy_ratio:.0%} buys with dip absorption",
             "smart_wallet": f"proven wallets +{snapshot.smart_wallet_buys}/-{snapshot.smart_wallet_sells}",
             "exact_ca_social": f"exact-CA mentions {snapshot.exact_ca_mentions_5m}/5m",
+            "live_attention": (
+                f"GMGN attention #{hot_rank}"
+                if hot_rank
+                else "fresh GMGN smart/KOL/platform attention"
+            ),
             "market_quality": "liquidity and sellability quality",
         }
         ranked = sorted(components.items(), key=lambda item: item[1], reverse=True)
@@ -482,5 +584,7 @@ class SignalScorer:
             drivers=drivers,
             blockers=blockers,
             invalidation=invalidation,
-            upgrade_trigger=upgrade_trigger if signal == "SCOUT" else None,
+            upgrade_trigger=(pulse_trigger if signal == "PULSE" else upgrade_trigger)
+            if signal in {"PULSE", "SCOUT"}
+            else None,
         )

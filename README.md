@@ -10,17 +10,17 @@ The previous alpha job sampled promoted/trending tokens and compared 24-hour vol
 
 The quality-v2 free profile scans every five minutes and separates the job into:
 
-1. Direct discovery from Bankr on Base and Robinhood, pools.fun, Flaunch, Baseline, verified o1/B20 and pons factory events, GeckoTerminal, DexScreener profiles, and allowlisted V2/V3 factory events including Robinhood Uniswap/Sushi. A read-only GMGN lane adds quality-filtered Base/Robinhood rank, launchpad and smart/KOL signal evidence. Dedicated Clanker and Zora polling is disabled because it consumed disproportionate free-tier analysis capacity; genuinely active tokens can still re-enter through market/pool discovery.
+1. Direct discovery from Bankr on Base and Robinhood, pools.fun, Flaunch, Baseline, verified o1/B20 and pons factory events, GeckoTerminal, DexScreener profiles, and allowlisted V2/V3 factory events including Robinhood Uniswap/Sushi. A read-only GMGN lane adds quality-filtered Base/Robinhood rank, launchpad, hot-search and smart/KOL/platform-call attention evidence. Dedicated Clanker and Zora polling is disabled because it consumed disproportionate free-tier analysis capacity; genuinely active tokens can still re-enter through market/pool discovery.
 2. SQLite state for candidates, rolling market snapshots, feed cursors, scores, feed health, alert outcomes, and deduplication while the free instance remains alive.
 3. DexScreener enrichment plus direct on-chain pons pricing/flow, a rate-limited HooderScan Robinhood fallback, and free GoPlus/Honeypot.is contract screening.
 4. Direct on-chain Transfer-log enrichment for distinct 5m/15m buyers and sellers, net-new-wallet velocity, pool-confirmed smart-wallet entries/exits, and deployer selling.
 5. Transparent inflection scoring with anti-late, local-base extension, bot/wash-flow, identity-copy, serial-deployer, concentration, tax, honeypot, and dangerous-admin filters. SpaceX, USD/stablecoin, US-oil, stock-wrapper and RWA-copy themes are hard-blocked. Large volume or a large historical smart-wallet count alone earns no conviction.
-6. Concise Telegram SCOUT/ACTION/A+ verdicts with an uncapped, evidence-led upside model, exact upgrade trigger for every SCOUT, measured evidence, first-detected versus alert market cap, sellability proxy and invalidation. Standard SCOUT/ACTION/A+ floors remain 60/70/80; a narrow 55-59 SCOUT lane is allowed only for verified launchpads when independent wallet-flow checks show exceptional early acceleration and every common safety/anti-late gate passes. The target is calculated only after the independent quality and safety gate.
-7. Every alert is re-sampled after 15 minutes, one hour, six hours, and 24 hours. Beefy records first-detected MC, actual alert MC, current MC and peak-after-alert MC separately alongside return, observed maximum favourable excursion (MFE), and observed maximum adverse excursion (MAE).
+6. Two-speed Telegram output. `PULSE` (48–59) is an explicitly non-buy breadcrumb that requires live GMGN attention plus at least two independent confirmations, clean basic safety, adequate liquidity and a precise upgrade trigger; it is capped at one per cycle. SCOUT/ACTION/A+ remain trade-quality calls with an uncapped evidence-led upside model, measured evidence, first-detected versus alert market cap, sellability proxy and invalidation. Standard SCOUT/ACTION/A+ floors remain 60/70/80; a narrow 55–59 SCOUT lane is allowed only for verified launchpads when independent wallet-flow checks show exceptional early acceleration and every common safety/anti-late gate passes. Target estimates are never attached to PULSE messages.
+7. Every alert is re-sampled after 15 minutes, one hour, six hours, and 24 hours. Beefy records first-detected MC, actual alert MC, current MC and peak-after-alert MC separately alongside return, observed maximum favourable excursion (MFE), and observed maximum adverse excursion (MAE). A prior SCOUT/ACTION/A+ can also produce one `PROTECT` warning when deployer selling, failed sellability, a 40% liquidity drain, a material price collapse with sell pressure, or a market disappearance confirmed across repeated successful checks appears.
 
 The old scheduled daily alpha report and two-hour breakout alert are no longer scheduled, so there is one automated signal path. `/trending` and `/lookup` remain available as manual research tools.
 
-The same contract is suppressed for 24 hours regardless of score changes or how many feeds discover it. After that, it can alert again only as a genuinely new reawakening setup. Scenario multiples are explanatory model outputs, not promised returns.
+The same contract is normally suppressed for 24 hours regardless of how many feeds discover it. The only same-day exception is one meaningful PULSE-to-SCOUT/ACTION/A+ quality upgrade after cooldown; routine repeated PULSE messages remain blocked. After 24 hours, a repeat requires a genuinely new reawakening setup. Scenario multiples are explanatory model outputs, not promised returns.
 
 ## Safety boundaries
 
@@ -30,7 +30,7 @@ The same contract is suppressed for 24 hours regardless of score changes or how 
 - The Telegram token is no longer embedded in startup logs or used directly as the visible webhook path.
 - `.env`, SQLite state, and local databases are excluded from Git.
 - Smart-wallet configuration accepts public addresses only.
-- GMGN access is restricted in code to three read-only discovery routes. Beefy never reads a GMGN signing/private key and never calls swap, quote, order, portfolio, or wallet routes.
+- GMGN access is restricted in code to four read-only discovery routes. Beefy never reads a GMGN signing/private key and never calls swap, quote, order, portfolio, or wallet routes.
 
 ## Existing Telegram credentials
 
@@ -56,7 +56,7 @@ Render sleeps a free web service after 15 minutes without inbound traffic. This 
 - Beefy Bot calls its own public `/health` endpoint every ten minutes.
 - `.github/workflows/keep-render-awake.yml` calls the same endpoint every ten minutes from GitHub Actions. The repository is public, so standard GitHub-hosted Actions are free. Scheduled workflows only begin after this workflow is on the default branch.
 
-The scanner defaults to a five-minute cadence, enriches at most 50 active candidates plus 50 alerted tokens awaiting outcomes, measures on-chain wallet flow for the 12 highest-priority candidates, runs at most 12 new contract checks per cycle, checks at most 18 Robinhood markets through the free fallback, and sends at most three alerts per cycle. Public RPC requests are serialized, gently spaced and retried after rate-limit responses. Candidate selection reserves capacity for both chains and direct platform lanes, while 45% of the active budget is retained for maturing rechecks; candidates already scoring 40+ are measured again before low-quality backlog. Outcome candidates are ordered by their next due measurement so an older alert is not starved by newer ones.
+The scanner defaults to a five-minute cadence, enriches at most 50 active candidates plus 50 alerted tokens awaiting outcomes, measures on-chain wallet flow for the 12 highest-priority candidates, runs at most 12 new contract checks per cycle, checks at most 18 Robinhood markets through the free fallback, and sends at most three alerts per cycle—including no more than one PULSE. Each cycle evaluates every enriched candidate before selecting the highest-quality eligible alerts. Public RPC requests are serialized, gently spaced and retried after rate-limit responses. Candidate selection reserves capacity for both chains and direct platform lanes, while 45% of the active budget is retained for maturing rechecks; candidates already scoring 40+ are measured again before low-quality backlog. Outcome candidates are ordered by their next due measurement so an older alert is not starved by newer ones.
 
 Render can still restart a free service at any time and its local filesystem is ephemeral. On a fresh state database, Beefy Bot rebuilds candidates from the direct feeds and a 1,800-block RPC lookback and marks that backlog as a bootstrap cohort. Those contracts cannot produce recycled new-launch alerts; they become eligible only after a later measured reawakening. Genuinely new discoveries after startup alert normally. This is a recovery strategy rather than permanent storage, but it avoids introducing a paid database.
 
@@ -66,8 +66,8 @@ No wallet key is needed or wanted.
 
 Admin-only Telegram commands:
 
-- `/scannerstatus` — last cycle, 24-hour candidates/snapshots/alerts, feed health, score-funnel counts, the main rejection reasons, and the best current near-misses with their real blocking reason.
-- `/signalstats` — 15m/1h/6h/24h sample counts, SCOUT/ACTION/A+ results, MFE/MAE, fixed tiers, latest first/alert/current/peak MC audit, and wallet-cohort progress.
+- `/scannerstatus` — last cycle, 24-hour candidates/snapshots/PULSE/call/PROTECT counts, feed health, score-funnel counts, the main rejection reasons, and the best current near-misses with their real blocking reason.
+- `/signalstats` — 15m/1h/6h/24h sample counts, PULSE/SCOUT/ACTION/A+ results, MFE/MAE, fixed tiers, latest first/alert/current/peak MC audit, and wallet-cohort progress.
 - `/scannow` — run one cycle immediately.
 - `/alerttest` — send a clearly labelled test message to the configured signal destination.
 
@@ -85,7 +85,7 @@ Beefy also records the transaction senders buying an alerted token from its pool
 
 The repository contains verified first-party o1/B20 production factories and direct pons event parsing. Current pons curve launches are priced and measured directly from public Robinhood RPC state instead of waiting for an indexer; its Uniswap V3 launches have a direct on-chain price/liquidity fallback. Bankr's public recent-launch feed keeps Robinhood as well as Base, Pools.fun has its own direct launch lane, and Baseline uses its public first-party feed. GMGN's read-only feed prioritises Pons, Long.xyz, Bankr, o1, Baseapp, Flaunch, Virtuals and other active launch mechanisms while excluding the operator-rejected themes before they consume enrichment calls.
 
-GMGN's published read-only demo credential is used by default and can be overridden with `GMGN_API_KEY`. Only recent smart-money/KOL *signal events* count as entries; GMGN's total tagged-wallet counts are shown as context but never converted into fake recent buys. The shared demo service can be unavailable or rate-limited, so every direct feed remains isolated and operational without it.
+GMGN's published read-only demo credential is used by default and can be overridden with `GMGN_API_KEY`. Recent smart-money/KOL/platform-call events and hot-search rank count as attention evidence only. They do not identify distinct wallets and therefore never become Beefy's proven-wallet entries; those require pool-confirmed public addresses observed independently on-chain. GMGN's total tagged-wallet counts remain context only. The shared demo service can be unavailable or rate-limited, so every direct feed remains isolated and operational without it.
 
 For a launcher whose first-party factory is not published or cannot yet be verified, `SCANNER_FACTORY_FEEDS_JSON` accepts a platform name, factory address, event topic, and indexed-field positions. This is the safe path for a current BaseStonk/Stonks or another future factory once its official address is published; the repository deliberately does not hard-code scraped or stale addresses.
 

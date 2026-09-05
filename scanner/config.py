@@ -74,6 +74,7 @@ class ScannerConfig:
     interval_seconds: int = 300
     state_db: str = "scanner_state.sqlite3"
     alert_chat_id: str | None = None
+    pulse_alert_score: float = 48.0
     exceptional_scout_score: float = 55.0
     scout_alert_score: float = 60.0
     min_alert_score: float = 70.0
@@ -84,6 +85,8 @@ class ScannerConfig:
     active_candidate_limit: int = 50
     active_max_age_hours: int = 720
     max_alerts_per_cycle: int = 3
+    max_pulse_alerts_per_cycle: int = 1
+    max_protect_alerts_per_cycle: int = 2
     outcome_candidate_limit: int = 50
     outcome_missing_confirmations: int = 3
     warmup_cycles: int = 1
@@ -173,6 +176,7 @@ class ScannerConfig:
                 or os.getenv("ADMIN_CHAT_ID")
                 or os.getenv("TELEGRAM_GROUP_ID")
             ),
+            pulse_alert_score=_float("SCANNER_PULSE_ALERT_SCORE", 48.0),
             exceptional_scout_score=_float("SCANNER_EXCEPTIONAL_SCOUT_SCORE", 55.0),
             scout_alert_score=_float("SCANNER_SCOUT_ALERT_SCORE", 60.0),
             min_alert_score=_float("SCANNER_MIN_ALERT_SCORE", 70.0),
@@ -183,6 +187,12 @@ class ScannerConfig:
             active_candidate_limit=_int("SCANNER_ACTIVE_LIMIT", 50),
             active_max_age_hours=_int("SCANNER_ACTIVE_MAX_AGE_HOURS", 720),
             max_alerts_per_cycle=max(1, _int("SCANNER_MAX_ALERTS_PER_CYCLE", 3)),
+            max_pulse_alerts_per_cycle=max(
+                0, _int("SCANNER_MAX_PULSE_ALERTS_PER_CYCLE", 1)
+            ),
+            max_protect_alerts_per_cycle=max(
+                0, _int("SCANNER_MAX_PROTECT_ALERTS_PER_CYCLE", 2)
+            ),
             outcome_candidate_limit=max(1, _int("SCANNER_OUTCOME_ACTIVE_LIMIT", 50)),
             outcome_missing_confirmations=max(
                 2, _int("SCANNER_OUTCOME_MISSING_CONFIRMATIONS", 3)

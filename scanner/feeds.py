@@ -325,6 +325,7 @@ class GMGNReadOnlyFeed:
     name = "gmgn"
     host = "https://openapi.gmgn.ai"
     allowed_paths = {
+        "/v1/market/hot_searches",
         "/v1/market/rank",
         "/v1/market/token_signal",
         "/v1/trenches",
@@ -453,17 +454,23 @@ class GMGNReadOnlyFeed:
         }
 
     @staticmethod
-    def _walk_token_rows(value: Any) -> list[dict[str, Any]]:
+    def _walk_token_rows(
+        value: Any, inherited_chain: str | None = None
+    ) -> list[dict[str, Any]]:
         rows: list[dict[str, Any]] = []
         if isinstance(value, dict):
+            row_chain = str(value.get("chain") or inherited_chain or "").lower()
             address = normalise_address(value.get("address") or value.get("token_address"))
             if len(address) == 42:
-                rows.append(value)
+                row = dict(value)
+                if row_chain:
+                    row.setdefault("chain", row_chain)
+                rows.append(row)
             for nested in value.values():
-                rows.extend(GMGNReadOnlyFeed._walk_token_rows(nested))
+                rows.extend(GMGNReadOnlyFeed._walk_token_rows(nested, row_chain or inherited_chain))
         elif isinstance(value, list):
             for nested in value:
-                rows.extend(GMGNReadOnlyFeed._walk_token_rows(nested))
+                rows.extend(GMGNReadOnlyFeed._walk_token_rows(nested, inherited_chain))
         return rows
 
     @staticmethod
@@ -592,14 +599,20 @@ class GMGNReadOnlyFeed:
             return None
 
         now_epoch = int(datetime.now(timezone.utc).timestamp())
-        recent_signal_types = sorted(
-            {
-                signal_type
-                for signal_type, trigger_at in signal_events
-                if signal_type in {12, 13, 20} and now_epoch - trigger_at <= 900
-            }
+        recent_events = []
+        for signal_type, trigger_at in signal_events:
+            normalised_trigger = trigger_at // 1000 if trigger_at > 10_000_000_000 else trigger_at
+            if signal_type in {12, 13, 19, 20} and 0 <= now_epoch - normalised_trigger <= 900:
+                recent_events.append((signal_type, normalised_trigger))
+        recent_signal_types = sorted({signal_type for signal_type, _ in recent_events})
+        recent_smart_signals = sum(
+            signal_type in {12, 20} for signal_type, _ in set(recent_events)
         )
-        recent_smart_signals = len({item for item in recent_signal_types if item in {12, 20}})
+        recent_platform_signals = sum(
+            signal_type in {13, 19} for signal_type, _ in set(recent_events)
+        )
+        hot_rank = _integer(row.get("_gmgn_hot_rank"))
+        hot_visits = _integer(row.get("_gmgn_hot_visits"))
         security = {
             "checked": any(
                 key in row
@@ -647,6 +660,7 @@ class GMGNReadOnlyFeed:
             + min(15.0, total_trades / 10.0)
             + min(10.0, liquidity / 10_000.0)
             + len(recent_signal_types) * 5.0
+            + (12.0 if 0 < hot_rank <= 10 else (7.0 if hot_rank <= 30 else 0.0))
         )
         return Candidate(
             chain=chain,
@@ -666,15 +680,18 @@ class GMGNReadOnlyFeed:
                 "gmgn_kol_count": kol_count,
                 "gmgn_recent_signal_types": recent_signal_types,
                 "gmgn_recent_smart_signals": recent_smart_signals,
+                "gmgn_recent_platform_signals": recent_platform_signals,
+                "gmgn_hot_rank": hot_rank or None,
+                "gmgn_hot_visits": hot_visits,
                 "gmgn_creator_token_count": _integer(row.get("twitter_create_token_count")),
                 "profile_social_links": social_links,
                 "gmgn_market": {
                     "price_usd": price or None,
                     "liquidity_usd": liquidity,
                     "market_cap_usd": market_cap,
-                    "volume_5m_usd": _number(row.get("volume")) if "rank" in route_names else 0.0,
-                    "buys_5m": buys if "rank" in route_names else 0,
-                    "sells_5m": sells if "rank" in route_names else 0,
+                    "volume_5m_usd": _number(row.get("volume")) if route_names & {"rank", "hot"} else 0.0,
+                    "buys_5m": buys if route_names & {"rank", "hot"} else 0,
+                    "sells_5m": sells if route_names & {"rank", "hot"} else 0,
                     "holder_count": holder_count or None,
                     "price_change_5m": _number(row.get("price_change_percent5m")),
                     "price_change_1h": _number(row.get("price_change_percent1h")),
@@ -738,12 +755,44 @@ class GMGNReadOnlyFeed:
                     "chain": "robinhood",
                     "groups": [
                         {
-                            "signal_type": [12, 13, 20],
+                            "signal_type": [12, 13, 19, 20],
                             "mc_min": 3_000,
                             "mc_max": self.config.max_market_cap_usd,
                             "min_create_or_open_ts": str(day_ago),
                         }
                     ],
+                },
+            ),
+            (
+                "gmgn-hot-attention",
+                "multi",
+                "hot",
+                "POST",
+                "/v1/market/hot_searches",
+                {},
+                {
+                    "params": [
+                        {
+                            "label": "beefy-hot-base",
+                            "chain": "base",
+                            "interval": "5m",
+                            "filters": ["not_honeypot", "verified", "renounced"],
+                            "limit": 40,
+                            "min_liquidity": self.config.min_liquidity_usd,
+                            "min_marketcap": 3_000,
+                            "max_marketcap": self.config.max_market_cap_usd,
+                        },
+                        {
+                            "label": "beefy-hot-robinhood",
+                            "chain": "robinhood",
+                            "interval": "5m",
+                            "filters": ["not_honeypot", "verified", "renounced"],
+                            "limit": 40,
+                            "min_liquidity": self.config.min_liquidity_usd,
+                            "min_marketcap": 3_000,
+                            "max_marketcap": self.config.max_market_cap_usd,
+                        },
+                    ]
                 },
             ),
         ]
@@ -762,18 +811,48 @@ class GMGNReadOnlyFeed:
                 state.mark_feed_error(health_name, error)
                 first_error = first_error or error
                 continue
-            for raw in rows:
+            for position, raw in enumerate(rows, start=1):
                 row = self._flatten_row(raw)
+                row_chain = str(row.get("chain") or chain).lower()
+                if row_chain not in {"base", "robinhood"}:
+                    continue
                 address = normalise_address(row.get("address") or row.get("token_address"))
                 if len(address) != 42:
                     continue
-                key = f"{chain}:{address}"
+                key = f"{row_chain}:{address}"
                 bucket = aggregated.setdefault(
                     key,
-                    {"row": {"chain": chain, "address": address}, "events": [], "routes": set()},
+                    {"row": {"chain": row_chain, "address": address}, "events": [], "routes": set()},
                 )
                 self._merge_row(bucket["row"], row)
                 bucket["routes"].add(route)
+                if route == "hot":
+                    for field in (
+                        "price",
+                        "market_cap",
+                        "marketcap",
+                        "mc",
+                        "liquidity",
+                        "liquidity_usd",
+                        "volume",
+                        "swaps",
+                        "buys",
+                        "sells",
+                        "holder_count",
+                        "price_change_percent5m",
+                        "price_change_percent1h",
+                        "price_change_percent24h",
+                    ):
+                        if row.get(field) not in (None, ""):
+                            bucket["row"][field] = row[field]
+                    hot_rank = _integer(row.get("rank"), position)
+                    previous_rank = _integer(bucket["row"].get("_gmgn_hot_rank"))
+                    if hot_rank and (not previous_rank or hot_rank < previous_rank):
+                        bucket["row"]["_gmgn_hot_rank"] = hot_rank
+                    bucket["row"]["_gmgn_hot_visits"] = max(
+                        _integer(bucket["row"].get("_gmgn_hot_visits")),
+                        _integer(row.get("visiting_count")),
+                    )
                 signal_type = _integer(row.get("signal_type"))
                 trigger_at = _integer(row.get("trigger_at"))
                 if signal_type and trigger_at:

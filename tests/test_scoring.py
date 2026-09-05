@@ -183,6 +183,24 @@ class SignalScorerTests(unittest.TestCase):
         self.assertFalse(result.eligible)
         self.assertIn("duplicates", " ".join(result.blockers))
 
+    def test_one_exact_name_and_ticker_clone_is_not_alerted(self):
+        candidate = Candidate(
+            chain="base",
+            token_address=TOKEN,
+            source="bankr",
+            launch_at=NOW,
+            metadata={
+                "identity_risk": {
+                    "copycat_penalty": 12,
+                    "reason": "1 recent exact name/ticker duplicate(s)",
+                    "exact_both": 1,
+                }
+            },
+        )
+        result = self.scorer.score(candidate, snapshot(), [], now=NOW)
+        self.assertFalse(result.eligible)
+        self.assertIn("exact name/ticker", " ".join(result.blockers))
+
     def test_missing_project_identity_does_not_alert_on_flow_alone(self):
         candidate = Candidate(
             chain="base", token_address=TOKEN, source="rpc-pairs:base:v2", launch_at=NOW
@@ -394,3 +412,77 @@ class SignalScorerTests(unittest.TestCase):
         )
         self.assertNotIn(result.signal, {"ACTION", "A+"})
         self.assertLess(result.score, 70)
+
+    def test_gmgn_hot_attention_can_emit_a_guarded_pulse(self):
+        config = ScannerConfig(pulse_alert_score=48)
+        scorer = SignalScorer(config)
+        candidate = Candidate(
+            chain="base",
+            token_address=TOKEN,
+            source="gmgn",
+            launch_at=NOW - timedelta(minutes=8),
+            deployer="0x2222222222222222222222222222222222222222",
+            metadata={"gmgn_evidence": True},
+        )
+        market = snapshot(
+            social_links=1,
+            smart_wallet_buys=0,
+            exact_ca_mentions_5m=0,
+            exact_ca_mentions_15m=0,
+            credible_social_mentions_5m=0,
+            creator_reputation=0,
+            narrative_score=0,
+            unique_buyers_5m=0,
+            unique_buyers_15m=0,
+            net_new_wallets_5m=0,
+            flow_checked=False,
+            buys_5m=12,
+            sells_5m=6,
+            price_change_5m=12,
+            raw={
+                "security": CLEAN_SECURITY
+                | {
+                    "admin_checks_complete": False,
+                    "simulation_checked": False,
+                    "sell_simulation_success": False,
+                    "top_unlocked_eoa_percent": 20,
+                },
+                "gmgn": {
+                    "hot_rank": 9,
+                    "hot_visits": 500,
+                    "recent_signal_types": [13],
+                },
+            },
+        )
+        history = [
+            snapshot(
+                buys_5m=4,
+                sells_5m=4,
+                price_usd=0.001,
+                raw={"security": CLEAN_SECURITY, "gmgn": {"hot_rank": 24}},
+            )
+        ]
+        result = scorer.score(candidate, market, history, now=NOW)
+        self.assertTrue(result.eligible)
+        self.assertEqual(result.signal, "PULSE")
+        self.assertIsNotNone(result.upgrade_trigger)
+
+    def test_pulse_never_bypasses_concentration_or_vertical_move_guards(self):
+        candidate = Candidate(
+            chain="base",
+            token_address=TOKEN,
+            source="gmgn",
+            launch_at=NOW - timedelta(minutes=8),
+            deployer="0x2222222222222222222222222222222222222222",
+            metadata={"gmgn_evidence": True},
+        )
+        unsafe = snapshot(
+            price_change_5m=70,
+            raw={
+                "security": CLEAN_SECURITY | {"top_unlocked_eoa_percent": 42},
+                "gmgn": {"hot_rank": 2, "recent_signal_types": [12, 13]},
+            },
+        )
+        result = self.scorer.score(candidate, unsafe, [], now=NOW)
+        self.assertFalse(result.eligible)
+        self.assertNotEqual(result.signal, "PULSE")

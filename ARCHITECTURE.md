@@ -5,17 +5,17 @@
 ```text
 launch APIs / profiles ─┐
 verified factory logs ──┼─> candidate state ─> market + contract enrichment
-GMGN read-only evidence ─┤
+GMGN rank/hot/signal evidence ─┤
 V2/V3 pool events ──────┘                         │
 token Transfer logs ─────────────────────────────┼─> unique buyer/holder inflection
 exact-CA social / creator overlay ───────────────┤
 manual + learned smart wallets ───────────────────┤
                                                   ├─> quality + anti-late gates
-                                                  └─> dedupe ─> Telegram alert
+                                                  └─> dedupe ─> PULSE / trade call
                                                                        │
                                               15m / 1h / 6h / 24h outcomes
                                                                        │
-                                                MFE/MAE + outcome/model calibration
+                                      MFE/MAE + calibration + PROTECT warnings
 ```
 
 Every external feed is isolated. One failing provider is recorded in `feed_health` but does not stop the remaining feeds or the next cycle.
@@ -31,7 +31,7 @@ Every external feed is isolated. One failing provider is recorded in `feed_healt
 - New pools: polls GeckoTerminal's per-network `new_pools` feed.
 - Base: polls standard V2 `PairCreated` and V3 `PoolCreated` events only from verified Uniswap and Sushi factory addresses.
 - Robinhood: polls the officially documented pons Uniswap V3 and pools.fun Sushi V3 factories, selecting the non-WETH/USDG side. It also uses HooderScan's no-key cached market endpoint for a rotating maximum of 18 candidates per cycle when direct pricing and DexScreener are unavailable. Block cursors prevent gaps during normal restarts.
-- GMGN: makes five read-only calls per cycle for Base/Robinhood 5m rank, launchpad trenches, and recent Robinhood smart/KOL/platform-call events. It hard-filters unsafe, illiquid, late, stock/RWA-copy, SpaceX, stablecoin and oil themes before admitting at most 80 diversified candidates. The client has an explicit route allowlist and no wallet, portfolio, quote, swap, order or signing surface.
+- GMGN: makes six read-only calls per cycle for Base/Robinhood 5m rank, launchpad trenches, recent Robinhood smart/KOL/platform-call events, and a combined Base/Robinhood 5m hot-search ranking. The hot-search request uses GMGN's EVM verified/renounced/not-honeypot filters. Beefy then hard-filters unsafe, illiquid, late, stock/RWA-copy, SpaceX, stablecoin and oil themes before admitting at most 80 diversified candidates. The client has an explicit route allowlist and no wallet, portfolio, quote, swap, order or signing surface.
 
 Dedicated Clanker and Zora feed lanes are disabled. In the measured free-tier run they occupied 15 of 50 analysis slots while producing one usable snapshot. Their liquid tokens remain discoverable through GeckoTerminal, DexScreener, verified pool events, or GMGN.
 
@@ -53,7 +53,7 @@ SQLite stores only public market data:
 - early-buyer observations and aggregate wallet reputation;
 - cached public contract-risk profiles.
 
-The same token can arrive from several feeds and is merged by `chain:token_address`. An alert is suppressed during the cooldown unless its score improves materially. A later reawakening may alert after the cooldown.
+The same token can arrive from several feeds and is merged by `chain:token_address`. Routine repeats are suppressed for 24 hours. One meaningful PULSE-to-trade-quality upgrade can alert after the cooldown; otherwise a repeat requires a later measured reawakening.
 
 ## Scoring
 
@@ -68,17 +68,19 @@ The 0–100 score is inspectable and gives the largest weights to change happeni
 - direct-launch provenance, creator outcome history and explicit product/narrative evidence;
 - liquidity depth and a free sell-simulation-based £20 sellability proxy;
 - contract safety, creator history, and holder concentration.
-- GMGN smart/KOL signal events and tagged-holder context, without treating historical tagged-wallet totals as fresh entries.
+- GMGN hot-search rank changes and fresh smart/KOL/platform-call events as attention evidence, without treating events or historical tagged-wallet totals as distinct proven-wallet entries.
 
 The anti-late gate penalizes anything already above 2x from its measured local base, vertical blow-offs, extended hourly moves, sell dominance, post-peak distribution and fading flow. High churn without buyer/holder growth, many transactions from very few unique wallets, unidentifiable or poor-history deployers, deployer selling, fake associations, duplicate identities and serial launching all reduce or block conviction. The safety gate retains the honeypot, sell restriction, dangerous concentration, tax, unlocked-liquidity and admin-control checks.
 
-Outputs are `MONITOR`, `SCOUT` (60–69 with exactly one stated upgrade trigger), `ACTION` (70–79), `A+` (80+ with at least five independent confirmations including two proven wallets and sellability), or `AVOID LATE`. Verified launch provenance is capped below ACTION and can support SCOUT only when live buyer/holder flow is exceptional and either the independent contract screen or project identity is already present, leaving one critical gate to upgrade. ACTION and A+ require both an independent contract screen and project/social or proven-wallet evidence. None places an order. A score alone is insufficient: every alert must independently pass safety, liquidity, inflection and evidence gates.
+Outputs are `MONITOR`, `PULSE`, `SCOUT`, `ACTION`, `A+`, or `AVOID LATE`. PULSE is a 48–59 early-attention breadcrumb, never a buy verdict: it requires live GMGN attention, at least two separate confirmations, basic contract checks, healthy flow, minimum liquidity, no vertical extension, and one precise upgrade trigger. SCOUT begins at 60, ACTION at 70, and A+ at 80 with at least five independent confirmations including two pool-confirmed proven wallets and sellability. Verified launch provenance is capped below ACTION and can support SCOUT only when live buyer/holder flow is exceptional and either the independent contract screen or project identity is already present, leaving one critical gate to upgrade. ACTION and A+ require both an independent contract screen and project/social or proven-wallet evidence. None places an order. A score alone is insufficient: every alert must independently pass its safety, liquidity, inflection and evidence gates.
 
-Telegram converts eligible outputs into one compact verdict line. Only after a token passes the independent quality, safety, and anti-late gates, its uncapped upside model combines valuation, liquidity depth, buyer share, volume, smart-wallet support, social evidence, stage, and short-term extension. Once five comparable completed calls exist, the structural estimate is blended with their 70th-percentile maximum favourable movement, preferring accurate 24-hour outcomes and falling back to six-hour outcomes. This lets genuinely supported 10x+ cases appear without allowing a large theoretical number to rescue a weak or unsafe token. The figure is measured from the alert price and is not a guaranteed return.
+Telegram converts eligible outputs into one compact verdict line. PULSE messages deliberately omit a target. Only after a token passes the stricter trade-quality, safety, and anti-late gates does its uncapped upside model combine valuation, liquidity depth, buyer share, volume, smart-wallet support, social evidence, stage, and short-term extension. Once five comparable completed calls exist, the structural estimate is blended with their 70th-percentile maximum favourable movement, preferring accurate 24-hour outcomes and falling back to six-hour outcomes. This lets genuinely supported 10x+ cases appear without allowing a large theoretical number to rescue a weak or unsafe token. The figure is measured from the alert price and is not a guaranteed return.
 
 ## Forward outcomes and calibration
 
 Every candidate stores the first market cap Beefy could actually observe. Every alert then stores the distinct actual alert MC, latest/current MC and peak MC observed after that alert. These are not reconstructed from an earlier discovery timestamp. Alerted candidates stay active for observations after 15, 60, 360 and 1,440 minutes, with MFE/MAE measured from the actual alert price.
+
+SCOUT/ACTION/A+ calls are also checked for material post-alert deterioration. A one-shot PROTECT message is sent when Beefy observes deployer selling, failed sellability, at least a 40% liquidity drain, a 50% fall from alert price, a 35% fall combined with dominant sells, or a market disappearance confirmed by three successful empty lookups. PULSE messages do not trigger PROTECT because they are explicitly not trade calls.
 
 The requested tiers remain fixed at SCOUT 60, ACTION 70 and A+ 80 so a label always means the same score range. Completed outcomes calibrate the upside model and support later evidence-led rubric reviews without silently moving those tier boundaries. This avoids retuning from one bad microcap or one lucky winner.
 

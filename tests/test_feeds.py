@@ -628,6 +628,24 @@ class GMGNSession:
 
     def post(self, url, **kwargs):
         self.calls.append(("POST", url, kwargs))
+        if url.endswith("/v1/market/hot_searches"):
+            return FakeResponse(
+                self._wrapped(
+                    [
+                        {
+                            "chain": "base",
+                            "interval": "5m",
+                            "tokens": [
+                                {
+                                    **self._quality_row("base", TOKEN, "bankr"),
+                                    "rank": 4,
+                                    "visiting_count": 640,
+                                }
+                            ],
+                        }
+                    ]
+                )
+            )
         if url.endswith("/v1/market/token_signal"):
             return FakeResponse(
                 self._wrapped(
@@ -705,12 +723,14 @@ class FeedTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(set(by_address), {TOKEN, TOKEN_TWO})
         self.assertTrue(by_address[TOKEN].metadata["gmgn_evidence"])
         self.assertEqual(by_address[TOKEN].metadata["gmgn_launchpad"], "bankr")
+        self.assertEqual(by_address[TOKEN].metadata["gmgn_hot_rank"], 4)
+        self.assertEqual(by_address[TOKEN].metadata["gmgn_hot_visits"], 640)
         self.assertEqual(by_address[TOKEN_TWO].metadata["gmgn_recent_smart_signals"], 1)
         self.assertEqual(
             by_address[TOKEN_TWO].metadata["gmgn_market"]["market_cap_usd"],
             100_000,
         )
-        self.assertEqual(len(session.calls), 5)
+        self.assertEqual(len(session.calls), 6)
         for _, url, kwargs in session.calls:
             self.assertIn(url.removeprefix(feed.host), feed.allowed_paths)
             serialised = str(kwargs).lower()

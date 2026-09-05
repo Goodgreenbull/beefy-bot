@@ -24,7 +24,14 @@ def _multiple(value: float) -> str:
 def _setup_summary(snapshot: MarketSnapshot, result: ScoreResult) -> str:
     trades = snapshot.buys_5m + snapshot.sells_5m
     buy_ratio = snapshot.buys_5m / trades if trades else 0.0
+    gmgn = snapshot.raw.get("gmgn") if isinstance(snapshot.raw, dict) else {}
+    gmgn = gmgn if isinstance(gmgn, dict) else {}
+    hot_rank = int(gmgn.get("hot_rank") or 0)
+    recent_signal_types = gmgn.get("recent_signal_types") or []
     evidence = [
+        f"GMGN search heat #{hot_rank}" if hot_rank else None,
+        "fresh GMGN smart/KOL attention" if set(recent_signal_types) & {12, 20} else None,
+        "fresh GMGN platform call" if set(recent_signal_types) & {13, 19} else None,
         f"{snapshot.unique_buyers_5m} unique buyers/5m" if snapshot.flow_checked else None,
         f"{buy_ratio:.0%} buy share",
         (
@@ -50,10 +57,14 @@ def format_alert(candidate: Candidate, snapshot: MarketSnapshot, result: ScoreRe
     age = f"{age_minutes}m" if age_minutes < 120 else f"{age_minutes / 60:.1f}h"
     alert_market_cap = snapshot.market_cap_usd or snapshot.fdv_usd
     first_market_cap = candidate.metadata.get("first_detected_market_cap_usd")
-    target_multiple = result.target_multiple or structural_target(candidate, snapshot, result)
-    target_market_cap = alert_market_cap * target_multiple if alert_market_cap else None
-    target_text = f" (~{_money(target_market_cap)} MC)" if target_market_cap else ""
+    target_multiple = None
+    target_market_cap = None
+    target_text = ""
     confidence = html.escape(result.target_confidence or "LOW")
+    if result.signal != "PULSE":
+        target_multiple = result.target_multiple or structural_target(candidate, snapshot, result)
+        target_market_cap = alert_market_cap * target_multiple if alert_market_cap else None
+        target_text = f" (~{_money(target_market_cap)} MC)" if target_market_cap else ""
     symbol = html.escape(candidate.symbol or "UNKNOWN")
     name = html.escape(candidate.name or symbol)
     chain = html.escape(candidate.chain.upper())
@@ -63,6 +74,8 @@ def format_alert(candidate: Candidate, snapshot: MarketSnapshot, result: ScoreRe
         verdict = f"🅰️ <b>Beefy A+ · {_multiple(target_multiple)} model upside{target_text}</b> [{confidence}]"
     elif result.signal == "ACTION":
         verdict = f"🎯 <b>Beefy ACTION · {_multiple(target_multiple)} model upside{target_text}</b> [{confidence}]"
+    elif result.signal == "PULSE":
+        verdict = "📡 <b>Beefy PULSE · CHECK NOW — not a buy call</b>"
     else:
         verdict = f"🔭 <b>Beefy SCOUT · {_multiple(target_multiple)} model upside{target_text}</b> [{confidence}]"
 
@@ -99,7 +112,7 @@ def format_alert(candidate: Candidate, snapshot: MarketSnapshot, result: ScoreRe
             else f"£20 sellability proxy unconfirmed ({providers})"
         ),
     ]
-    if result.signal == "SCOUT" and result.upgrade_trigger:
+    if result.signal in {"PULSE", "SCOUT"} and result.upgrade_trigger:
         lines.extend(["", f"<b>Upgrade trigger:</b> {html.escape(result.upgrade_trigger)}"])
     lines.extend(
         [
@@ -111,11 +124,49 @@ def format_alert(candidate: Candidate, snapshot: MarketSnapshot, result: ScoreRe
     chart = candidate.chart_url or snapshot.raw.get("url")
     if chart:
         lines.append(f'<a href="{html.escape(str(chart), quote=True)}">Open chart</a>')
-    lines.extend(
-        [
-            "",
-            f"Model: {html.escape(result.target_basis)}",
-            "Target starts at alert MC—not first-detected MC · not a promise · no auto-trading",
-        ]
-    )
+    if result.signal == "PULSE":
+        lines.extend(
+            [
+                "",
+                "PULSE = early attention breadcrumb; wait for the stated upgrade trigger before treating it as a call.",
+                "No auto-trading",
+            ]
+        )
+    else:
+        lines.extend(
+            [
+                "",
+                f"Model: {html.escape(result.target_basis)}",
+                "Target starts at alert MC—not first-detected MC · not a promise · no auto-trading",
+            ]
+        )
+    return "\n".join(lines)
+
+
+def format_protect_alert(
+    candidate: Candidate,
+    snapshot: MarketSnapshot,
+    protection: dict,
+) -> str:
+    """Format a one-shot warning when a previous call deteriorates materially."""
+    symbol = html.escape(candidate.symbol or "UNKNOWN")
+    name = html.escape(candidate.name or candidate.symbol or "Unknown token")
+    chain = html.escape(candidate.chain.upper())
+    reasons = [html.escape(str(item)) for item in protection.get("reasons") or []]
+    reason_text = " · ".join(reasons[:3]) or "material deterioration detected"
+    return_pct = protection.get("return_pct")
+    move_text = f" · {float(return_pct):+.1f}% from alert" if return_pct is not None else ""
+    lines = [
+        f"⚠️ <b>BEEFY PROTECT · {chain} · {symbol}</b>",
+        f"<b>{name} (${symbol})</b>",
+        f"Earlier {html.escape(str(protection.get('original_signal') or 'signal'))}{move_text}",
+        f"Risk change: {reason_text}",
+        "",
+        f"Current MC {_money(snapshot.market_cap_usd or snapshot.fdv_usd)} · Liq {_money(snapshot.liquidity_usd)}",
+        "If held, review exposure and protect capital; Beefy has not made any trade.",
+        f"<b>CA:</b> <code>{html.escape(candidate.token_address)}</code>",
+    ]
+    chart = candidate.chart_url or snapshot.raw.get("url")
+    if chart:
+        lines.append(f'<a href="{html.escape(str(chart), quote=True)}">Open chart</a>')
     return "\n".join(lines)

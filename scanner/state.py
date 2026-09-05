@@ -126,6 +126,17 @@ class SQLiteState:
             CREATE INDEX IF NOT EXISTS idx_alerts_candidate_time
                 ON alerts(candidate_key, sent_at DESC);
 
+            CREATE TABLE IF NOT EXISTS protective_alerts (
+                alert_id INTEGER PRIMARY KEY,
+                candidate_key TEXT NOT NULL,
+                sent_at TEXT NOT NULL,
+                reasons_json TEXT NOT NULL,
+                FOREIGN KEY(alert_id) REFERENCES alerts(id) ON DELETE CASCADE,
+                FOREIGN KEY(candidate_key) REFERENCES candidates(candidate_key) ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS idx_protective_alerts_time
+                ON protective_alerts(sent_at DESC);
+
             CREATE TABLE IF NOT EXISTS alert_outcomes (
                 alert_id INTEGER NOT NULL,
                 horizon_minutes INTEGER NOT NULL,
@@ -684,6 +695,7 @@ class SQLiteState:
             JOIN alert_outcomes o ON o.alert_id = a.id AND o.horizon_minutes = 1440
             WHERE c.chain = ? AND c.deployer = ?
               AND c.candidate_key != ?
+              AND a.signal != 'PULSE'
               AND o.return_pct IS NOT NULL
               AND COALESCE(o.capture_lag_minutes, 0) <= 120
             ORDER BY o.captured_at DESC
@@ -797,7 +809,9 @@ class SQLiteState:
         )[:3]
         return {
             "screened": len(scores),
+            "score_48_plus": sum(score >= 48 for score in scores),
             "score_55_plus": sum(score >= 55 for score in scores),
+            "score_48_54": sum(48 <= score < 55 for score in scores),
             "score_40_54": sum(40 <= score < 55 for score in scores),
             "score_below_40": sum(score < 40 for score in scores),
             "top_blockers": [
@@ -814,17 +828,22 @@ class SQLiteState:
         token_realert_hours: int = 24,
     ) -> bool:
         row = self.connection.execute(
-            "SELECT sent_at, stage, score FROM alerts WHERE candidate_key = ? ORDER BY sent_at DESC LIMIT 1",
+            "SELECT sent_at, stage, signal, score FROM alerts WHERE candidate_key = ? ORDER BY sent_at DESC LIMIT 1",
             (candidate_key,),
         ).fetchone()
         if not row:
             return True
         sent_at = _dt(row["sent_at"]) or datetime.now(timezone.utc)
         elapsed = datetime.now(timezone.utc) - sent_at
-        if elapsed < timedelta(hours=max(1, token_realert_hours)):
-            return False
         cooling_down = elapsed < timedelta(minutes=cooldown_minutes)
         meaningful_upgrade = result.score >= float(row["score"]) + score_upgrade
+        pulse_upgrade = bool(
+            row["signal"] == "PULSE"
+            and result.signal in {"SCOUT", "ACTION", "A+"}
+            and meaningful_upgrade
+        )
+        if elapsed < timedelta(hours=max(1, token_realert_hours)):
+            return not cooling_down and pulse_upgrade
         new_reawakening = result.stage == "REAWAKENING" and result.stage != row["stage"]
         # A token gets one alert per 24h. A later repeat must represent a true
         # reawakening (or a materially stronger reawakening), never a routine
@@ -878,6 +897,79 @@ class SQLiteState:
         alert_id = int(self.connection.execute("SELECT last_insert_rowid()").fetchone()[0])
         self.connection.commit()
         return alert_id
+
+    def protection_needed(
+        self, candidate_key: str, snapshot: MarketSnapshot
+    ) -> dict[str, Any] | None:
+        """Return a one-shot deterioration warning for a prior trade-quality call."""
+        cutoff = (snapshot.captured_at - timedelta(hours=24)).isoformat()
+        row = self.connection.execute(
+            """
+            SELECT a.id, a.sent_at, a.signal, a.entry_price_usd,
+                   a.entry_liquidity_usd
+            FROM alerts a
+            LEFT JOIN protective_alerts p ON p.alert_id = a.id
+            WHERE a.candidate_key = ? AND a.sent_at >= ?
+              AND a.signal IN ('SCOUT', 'ACTION', 'A+')
+              AND p.alert_id IS NULL
+            ORDER BY a.sent_at DESC LIMIT 1
+            """,
+            (candidate_key, cutoff),
+        ).fetchone()
+        if not row:
+            return None
+        sent_at = _dt(row["sent_at"])
+        if not sent_at or snapshot.captured_at - sent_at < timedelta(minutes=2):
+            return None
+
+        security = snapshot.raw.get("security") if isinstance(snapshot.raw, dict) else {}
+        security = security if isinstance(security, dict) else {}
+        reasons: list[str] = []
+        if snapshot.deployer_sells_15m > 0:
+            reasons.append("deployer selling appeared")
+        if security.get("is_honeypot") or security.get("cannot_sell"):
+            reasons.append("sellability or honeypot risk appeared")
+        if security.get("open_source") is False:
+            reasons.append("contract verification is no longer clean")
+
+        entry_liquidity = float(row["entry_liquidity_usd"] or 0.0)
+        if entry_liquidity >= 1_000 and snapshot.liquidity_usd <= entry_liquidity * 0.60:
+            reasons.append("liquidity fell at least 40% from the alert")
+
+        entry_price = float(row["entry_price_usd"] or 0.0)
+        return_pct: float | None = None
+        if entry_price > 0 and snapshot.price_usd is not None:
+            return_pct = (float(snapshot.price_usd) / entry_price - 1.0) * 100.0
+        trades = snapshot.buys_5m + snapshot.sells_5m
+        sell_share = snapshot.sells_5m / trades if trades else 0.0
+        if return_pct is not None and return_pct <= -50.0:
+            reasons.append("price fell at least 50% from the actual alert price")
+        elif return_pct is not None and return_pct <= -35.0 and trades >= 6 and sell_share >= 0.60:
+            reasons.append("price is down at least 35% with sell pressure dominating")
+
+        if not reasons:
+            return None
+        return {
+            "alert_id": int(row["id"]),
+            "original_signal": str(row["signal"]),
+            "return_pct": round(return_pct, 1) if return_pct is not None else None,
+            "reasons": reasons,
+        }
+
+    def record_protection(self, candidate_key: str, protection: dict[str, Any]) -> None:
+        self.connection.execute(
+            """
+            INSERT OR IGNORE INTO protective_alerts(alert_id, candidate_key, sent_at, reasons_json)
+            VALUES (?, ?, ?, ?)
+            """,
+            (
+                int(protection["alert_id"]),
+                candidate_key,
+                datetime.now(timezone.utc).isoformat(),
+                json.dumps(protection.get("reasons") or [], separators=(",", ":")),
+            ),
+        )
+        self.connection.commit()
 
     def update_alert_outcomes(
         self,
@@ -1006,6 +1098,13 @@ class SQLiteState:
             ),
             terminal_loss=True,
         )
+
+    def market_missing_confirmed(self, candidate_key: str, confirmations: int = 3) -> bool:
+        row = self.connection.execute(
+            "SELECT consecutive FROM candidate_market_failures WHERE candidate_key = ?",
+            (candidate_key,),
+        ).fetchone()
+        return bool(row and int(row["consecutive"]) >= max(2, confirmations))
 
     def record_alert_wallets(self, alert_id: int, chain: str, wallets: set[str]) -> int:
         now = datetime.now(timezone.utc).isoformat()
@@ -1254,6 +1353,7 @@ class SQLiteState:
             SELECT a.score, o.mfe_pct, o.mae_pct, o.return_pct
             FROM alert_outcomes o JOIN alerts a ON a.id = o.alert_id
             WHERE o.horizon_minutes = 1440
+              AND a.signal != 'PULSE'
               AND o.return_pct IS NOT NULL
               AND COALESCE(o.capture_lag_minutes, 0) <= 120
             ORDER BY o.captured_at DESC LIMIT 200
@@ -1320,6 +1420,12 @@ class SQLiteState:
             ).fetchone()[0],
             "alerts_24h": self.connection.execute(
                 "SELECT COUNT(*) FROM alerts WHERE sent_at >= ?", (cutoff,)
+            ).fetchone()[0],
+            "pulses_24h": self.connection.execute(
+                "SELECT COUNT(*) FROM alerts WHERE sent_at >= ? AND signal = 'PULSE'", (cutoff,)
+            ).fetchone()[0],
+            "protects_24h": self.connection.execute(
+                "SELECT COUNT(*) FROM protective_alerts WHERE sent_at >= ?", (cutoff,)
             ).fetchone()[0],
             "outcomes_24h": self.connection.execute(
                 "SELECT COUNT(*) FROM alert_outcomes WHERE captured_at >= ?", (cutoff,)

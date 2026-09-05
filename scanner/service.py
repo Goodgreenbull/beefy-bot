@@ -38,6 +38,7 @@ from .state import SQLiteState
 
 
 AlertCallback = Callable[[Candidate, MarketSnapshot, ScoreResult], Awaitable[None]]
+ProtectionCallback = Callable[[Candidate, MarketSnapshot, dict], Awaitable[None]]
 
 
 class ScannerService:
@@ -46,10 +47,12 @@ class ScannerService:
         config: ScannerConfig,
         state: SQLiteState,
         alert_callback: AlertCallback | None = None,
+        protection_callback: ProtectionCallback | None = None,
     ) -> None:
         self.config = config
         self.state = state
         self.alert_callback = alert_callback
+        self.protection_callback = protection_callback
         self.session: aiohttp.ClientSession | None = None
         self.lock = asyncio.Lock()
         self.enricher = DexScreenerEnricher(config)
@@ -92,6 +95,8 @@ class ScannerService:
             "discovered": 0,
             "enriched": 0,
             "alerts": 0,
+            "pulses": 0,
+            "protects": 0,
             "outcomes": 0,
             "errors": 0,
         }
@@ -341,12 +346,9 @@ class ScannerService:
             snapshot.social_links,
             _integer(candidate.metadata.get("profile_social_links")),
         )
-        # Only recent GMGN smart-money/KOL *signal events* count as entries.
-        # Total tagged holder counts are context and never become buy evidence.
-        snapshot.smart_wallet_buys = max(
-            snapshot.smart_wallet_buys,
-            _integer(candidate.metadata.get("gmgn_recent_smart_signals")),
-        )
+        # GMGN signal events are useful attention evidence, but they do not
+        # identify distinct wallets. Keep them out of the proven-wallet count;
+        # only pool-confirmed addresses collected by Beefy may fill that field.
         gmgn_security = market.get("security")
         gmgn_security = gmgn_security if isinstance(gmgn_security, dict) else {}
         existing = snapshot.raw.get("security")
@@ -398,6 +400,10 @@ class ScannerService:
             "smart_count": candidate.metadata.get("gmgn_smart_count", 0),
             "kol_count": candidate.metadata.get("gmgn_kol_count", 0),
             "recent_signal_types": candidate.metadata.get("gmgn_recent_signal_types", []),
+            "recent_smart_signals": candidate.metadata.get("gmgn_recent_smart_signals", 0),
+            "recent_platform_signals": candidate.metadata.get("gmgn_recent_platform_signals", 0),
+            "hot_rank": candidate.metadata.get("gmgn_hot_rank"),
+            "hot_visits": candidate.metadata.get("gmgn_hot_visits", 0),
             "creator_token_count": candidate.metadata.get("gmgn_creator_token_count", 0),
         }
 
@@ -542,16 +548,50 @@ class ScannerService:
             thresholds = self.state.calibrated_thresholds(self.config)
             enriched_count = 0
             alert_count = 0
+            pulse_count = 0
+            protect_count = 0
             outcome_count = 0
             prepared: list[tuple[Candidate, MarketSnapshot, list[MarketSnapshot], ScoreResult]] = []
             for candidate, snapshot, request_succeeded in enriched:
                 if snapshot is None:
                     if request_succeeded and candidate.key in outcome_keys:
+                        captured_at = datetime.now(timezone.utc)
                         outcome_count += self.state.record_missing_market(
                             candidate.key,
-                            datetime.now(timezone.utc),
+                            captured_at,
                             self.config.outcome_missing_confirmations,
                         )
+                        if (
+                            self.protection_callback
+                            and protect_count < self.config.max_protect_alerts_per_cycle
+                            and self.state.market_missing_confirmed(
+                                candidate.key, self.config.outcome_missing_confirmations
+                            )
+                        ):
+                            missing_snapshot = MarketSnapshot(
+                                chain=candidate.chain,
+                                token_address=candidate.token_address,
+                                captured_at=captured_at,
+                                price_usd=0.0,
+                                liquidity_usd=0.0,
+                                source="confirmed-market-disappearance",
+                            )
+                            protection = self.state.protection_needed(
+                                candidate.key, missing_snapshot
+                            )
+                            if protection:
+                                protection["reasons"] = [
+                                    "market disappeared after repeated successful checks"
+                                ] + list(protection.get("reasons") or [])
+                                try:
+                                    await self.protection_callback(
+                                        candidate, missing_snapshot, protection
+                                    )
+                                    self.state.record_protection(candidate.key, protection)
+                                    self.state.mark_feed_success("telegram-protect", 1)
+                                    protect_count += 1
+                                except Exception as error:
+                                    self.state.mark_feed_error("telegram-protect", error)
                     continue
                 if candidate.key in outcome_keys:
                     self.state.reset_market_failures(candidate.key)
@@ -644,6 +684,7 @@ class ScannerService:
                     self.state.upsert_security_profile(profile)
                     self.state.mark_feed_success("token-safety", 1)
 
+            finalised: list[tuple[Candidate, MarketSnapshot, ScoreResult]] = []
             for candidate, snapshot, history, _ in prepared:
                 result = self.scorer.score(
                     candidate,
@@ -659,6 +700,27 @@ class ScannerService:
                 )
                 outcome_count += self.state.update_alert_outcomes(candidate.key, snapshot)
                 self.state.update_score(candidate.key, result)
+                protection = self.state.protection_needed(candidate.key, snapshot)
+                if (
+                    protection
+                    and self.protection_callback
+                    and protect_count < self.config.max_protect_alerts_per_cycle
+                ):
+                    try:
+                        await self.protection_callback(candidate, snapshot, protection)
+                        self.state.record_protection(candidate.key, protection)
+                        self.state.mark_feed_success("telegram-protect", 1)
+                        protect_count += 1
+                    except Exception as error:
+                        self.state.mark_feed_error("telegram-protect", error)
+                finalised.append((candidate, snapshot, result))
+
+            tier_priority = {"A+": 4, "ACTION": 3, "SCOUT": 2, "PULSE": 1}
+            finalised.sort(
+                key=lambda item: (tier_priority.get(item[2].signal, 0), item[2].score),
+                reverse=True,
+            )
+            for candidate, snapshot, result in finalised:
                 if (
                     warmup_complete
                     and result.eligible
@@ -668,6 +730,10 @@ class ScannerService:
                     )
                     and self.alert_callback
                     and alert_count < self.config.max_alerts_per_cycle
+                    and (
+                        result.signal != "PULSE"
+                        or pulse_count < self.config.max_pulse_alerts_per_cycle
+                    )
                     and self.state.alert_allowed(
                         candidate.key,
                         result,
@@ -677,25 +743,28 @@ class ScannerService:
                     )
                 ):
                     try:
-                        try:
-                            self.state.apply_target_estimate(candidate, snapshot, result)
-                            self.state.mark_feed_success("target-model", 1)
-                        except Exception as error:
-                            self.state.mark_feed_error("target-model", error)
+                        if result.signal != "PULSE":
+                            try:
+                                self.state.apply_target_estimate(candidate, snapshot, result)
+                                self.state.mark_feed_success("target-model", 1)
+                            except Exception as error:
+                                self.state.mark_feed_error("target-model", error)
                         await self.alert_callback(candidate, snapshot, result)
                         self.state.mark_feed_success("telegram-alerts", 1)
                         alert_id = self.state.record_alert(candidate.key, result, snapshot)
-                        try:
-                            early_buyers = await self.smart_wallet_monitor.observe_early_buyers(
-                                self.session, candidate, snapshot
-                            )
-                            self.state.record_alert_wallets(
-                                alert_id, candidate.chain, early_buyers
-                            )
-                            self.state.mark_feed_success("wallet-curation", len(early_buyers))
-                        except Exception as error:
-                            self.state.mark_feed_error("wallet-curation", error)
+                        if result.signal != "PULSE":
+                            try:
+                                early_buyers = await self.smart_wallet_monitor.observe_early_buyers(
+                                    self.session, candidate, snapshot
+                                )
+                                self.state.record_alert_wallets(
+                                    alert_id, candidate.chain, early_buyers
+                                )
+                                self.state.mark_feed_success("wallet-curation", len(early_buyers))
+                            except Exception as error:
+                                self.state.mark_feed_error("wallet-curation", error)
                         alert_count += 1
+                        pulse_count += int(result.signal == "PULSE")
                     except Exception as error:
                         self.state.mark_feed_error("telegram-alerts", error)
 
@@ -709,6 +778,8 @@ class ScannerService:
                 "discovered": len(discovered),
                 "enriched": enriched_count,
                 "alerts": alert_count,
+                "pulses": pulse_count,
+                "protects": protect_count,
                 "outcomes": outcome_count,
                 "gmgn_candidates": sum(
                     "gmgn" in candidate.source.split(",") for candidate in discovered
