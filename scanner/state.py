@@ -840,7 +840,7 @@ class SQLiteState:
         pulse_upgrade = bool(
             row["signal"] == "PULSE"
             and result.signal in {"SCOUT", "ACTION", "A+"}
-            and meaningful_upgrade
+            and result.score >= float(row["score"])
         )
         if elapsed < timedelta(hours=max(1, token_realert_hours)):
             return not cooling_down and pulse_upgrade

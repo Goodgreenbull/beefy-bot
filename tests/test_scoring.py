@@ -466,6 +466,54 @@ class SignalScorerTests(unittest.TestCase):
         self.assertEqual(result.signal, "PULSE")
         self.assertIsNotNone(result.upgrade_trigger)
 
+    def test_direct_market_inflection_can_pulse_during_gmgn_outage(self):
+        candidate = Candidate(
+            chain="base",
+            token_address=TOKEN,
+            source="bankr",
+            launch_at=NOW - timedelta(minutes=8),
+            deployer="0x2222222222222222222222222222222222222222",
+        )
+        market = snapshot(
+            social_links=1,
+            smart_wallet_buys=0,
+            exact_ca_mentions_5m=0,
+            exact_ca_mentions_15m=0,
+            credible_social_mentions_5m=0,
+            creator_reputation=0,
+            narrative_score=0,
+            unique_buyers_5m=5,
+            unique_buyers_15m=9,
+            net_new_wallets_5m=5,
+            buys_5m=12,
+            sells_5m=5,
+            flow_checked=True,
+            raw={
+                "security": CLEAN_SECURITY
+                | {
+                    "admin_checks_complete": False,
+                    "simulation_checked": False,
+                    "sell_simulation_success": False,
+                    "top_unlocked_eoa_percent": 20,
+                }
+            },
+        )
+        history = [
+            snapshot(
+                buys_5m=5,
+                sells_5m=5,
+                volume_5m_usd=4_000,
+                price_usd=0.001,
+                unique_buyers_5m=2,
+                unique_buyers_15m=5,
+                net_new_wallets_5m=1,
+            )
+        ]
+        result = self.scorer.score(candidate, market, history, now=NOW)
+        self.assertTrue(result.eligible)
+        self.assertEqual(result.signal, "PULSE")
+        self.assertEqual(result.components["live_attention"], 4.0)
+
     def test_pulse_never_bypasses_concentration_or_vertical_move_guards(self):
         candidate = Candidate(
             chain="base",

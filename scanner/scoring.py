@@ -129,7 +129,7 @@ class SignalScorer:
             if attention_rank and prior_attention_rank
             else 0
         )
-        live_attention = bool(
+        gmgn_attention = bool(
             (0 < attention_rank <= 30)
             or attention_rank_gain >= 5
             or recent_smart_attention
@@ -221,10 +221,21 @@ class SignalScorer:
             sell_simulation and clean_tax and not security.get("cannot_sell")
             and snapshot.liquidity_usd >= self.config.min_liquidity_usd
         )
+        direct_market_attention = bool(
+            balance_healthy
+            and (
+                (buyer_inflecting and volume_acceleration >= 1.25)
+                or (holder_inflecting and txns_5m >= 8)
+                or (buyer_inflecting and dipped_and_absorbed)
+            )
+        )
+        pulse_attention = gmgn_attention or direct_market_attention
+        if direct_market_attention and not gmgn_attention:
+            components["live_attention"] = max(components["live_attention"], 4.0)
         independent_signals = sum((
             buyer_inflecting, holder_inflecting, balance_healthy, dipped_and_absorbed,
             smart_confirmed, social_inflecting, creator_or_narrative, sellable_20_proxy,
-            live_attention,
+            pulse_attention,
         ))
 
         blockers: list[str] = []
@@ -483,8 +494,8 @@ class SignalScorer:
             and float(security.get("top_unlocked_eoa_percent") or 0.0) <= 35
             and int(security.get("risk_level") or 0) < 60
         )
-        if not live_attention:
-            pulse_trigger = "GMGN 1m activity or a fresh smart/KOL/platform signal appears"
+        if not pulse_attention:
+            pulse_trigger = "GMGN attention or direct buyer/holder activity starts accelerating"
         elif pulse_confirmations < 2:
             pulse_trigger = "a second independent confirmation joins the live attention spike"
         elif not buyer_inflecting and not holder_inflecting:
@@ -526,10 +537,10 @@ class SignalScorer:
             and pulse_safety
             and not hard_late
             and not hard_risk
-            and live_attention
+            and pulse_attention
             and pulse_confirmations >= 2
             and final_score >= self.config.pulse_alert_score
-            and final_score < scout_score
+            and final_score < action_score
             and txns_5m >= 8
             and buy_ratio >= 0.55
             and local_multiple < 1.90
@@ -574,6 +585,8 @@ class SignalScorer:
             "live_attention": (
                 f"GMGN 1m activity #{attention_rank}"
                 if attention_rank
+                else "direct buyer/holder activity inflection"
+                if direct_market_attention
                 else "fresh GMGN smart/KOL/platform attention"
             ),
             "market_quality": "liquidity and sellability quality",
