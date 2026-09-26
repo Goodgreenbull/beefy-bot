@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import html
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 
 from .models import Candidate, MarketSnapshot, ScoreResult
 from .targeting import structural_target
@@ -140,6 +141,26 @@ def format_alert(candidate: Candidate, snapshot: MarketSnapshot, result: ScoreRe
                 "Target starts at alert MC—not first-detected MC · not a promise · no auto-trading",
             ]
         )
+    return "\n".join(lines)
+
+
+def format_wallet_discovery_alert(candidate: Candidate) -> str:
+    """The first verified wallet swap is an investigation prompt, not a trade call."""
+    metadata = candidate.metadata
+    wallets = metadata.get("wallet_discovery_wallets") or []
+    tx_hash = str(metadata.get("wallet_discovery_tx") or "")
+    block = metadata.get("wallet_discovery_block") or "unknown"
+    observed = datetime.fromisoformat(metadata["wallet_discovery_at"])
+    uk_time = observed.astimezone(ZoneInfo("Europe/London")).strftime("%d %b %H:%M %Z")
+    lines = [
+        "🔎 <b>BEEFY DISCOVERY · BASE · VERIFY FIRST</b>",
+        f"{len(wallets)} tracked wallet{'s' if len(wallets) != 1 else ''} bought from a verified pool swap.",
+        f"Observed {html.escape(uk_time)} · block {html.escape(str(block))}",
+        f"Wallets: {html.escape(', '.join(wallet[:8] + '…' + wallet[-4:] for wallet in wallets))}",
+        f"<b>CA:</b> <code>{html.escape(candidate.token_address)}</code>",
+        f"<a href=\"https://basescan.org/tx/{html.escape(tx_hash, quote=True)}\">Swap transaction</a>",
+        "MC, liquidity, sellability and deployer checks pending. Investigate; no entry verdict yet.",
+    ]
     return "\n".join(lines)
 
 
