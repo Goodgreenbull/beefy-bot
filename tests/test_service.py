@@ -17,6 +17,29 @@ class FakeFeed:
         return [Candidate(chain="base", token_address=TOKEN, source="bankr", symbol="TEST")]
 
 
+class WalletDiscoveryFakeFeed:
+    name = "wallet-swap-discovery:base"
+
+    async def discover(self, session, state):
+        return [Candidate(
+            chain="base", token_address=TOKEN, source="wallet-swap",
+            metadata={"wallet_discovery_at": datetime.now(timezone.utc).isoformat(),
+                      "wallet_discovery_block": 100,
+                      "wallet_discovery_tx": "0x" + "a" * 64,
+                      "wallet_discovery_wallets": ["0x" + "5" * 40]},
+        )]
+
+
+class NoMarketEnricher:
+    async def enrich(self, session, candidate):
+        return None
+
+
+class NoWalletSignals:
+    async def collect(self, session, state, candidates):
+        return {}
+
+
 class FakeEnricher:
     async def enrich(self, session, candidate):
         return MarketSnapshot(
@@ -88,6 +111,28 @@ class FixedRankScorer:
 
 
 class ScannerServiceTests(unittest.IsolatedAsyncioTestCase):
+    async def test_wallet_discovery_alert_precedes_enrichment_and_deduplicates(self):
+        state = SQLiteState(":memory:")
+        seen = []
+
+        async def capture(candidate):
+            seen.append(candidate.key)
+
+        service = ScannerService(
+            ScannerConfig(warmup_cycles=0), state, discovery_callback=capture
+        )
+        service.feeds = [WalletDiscoveryFakeFeed()]
+        service.enricher = NoMarketEnricher()
+        service.smart_wallet_monitor = NoWalletSignals()
+        try:
+            first = await service.run_cycle()
+            second = await service.run_cycle()
+        finally:
+            await service.stop()
+        self.assertEqual(first["wallet_alerts"], 1)
+        self.assertEqual(second["wallet_alerts"], 0)
+        self.assertEqual(seen, [f"base:{TOKEN}"])
+
     async def test_live_feed_set_replaces_clanker_and_zora_with_gmgn(self):
         state = SQLiteState(":memory:")
         service = ScannerService(ScannerConfig(), state)
