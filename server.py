@@ -20,7 +20,7 @@ from telegram.ext import (
 )
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from scanner import ScannerConfig, ScannerService, SQLiteState
-from scanner.alerts import format_alert, format_protect_alert
+from scanner.alerts import format_alert, format_protect_alert, format_wallet_discovery_alert
 from scanner.models import Candidate, MarketSnapshot, ScoreResult
 
 TOKEN             = os.getenv("BOT_TOKEN")
@@ -478,6 +478,10 @@ async def scannerstatus_command(update: Update, context: ContextTypes.DEFAULT_TY
         f"Snapshots (24h): {status.get('snapshots_24h', 0)}\n"
         f"Alerts (24h): {status.get('alerts_24h', 0)} "
         f"(PULSE {status.get('pulses_24h', 0)})\n"
+        f"Wallet discoveries this cycle: {status.get('wallet_discoveries', 0)} "
+        f"(sent {status.get('wallet_alerts', 0)})\n"
+        f"Tracked wallets: {len(scanner_config.smart_wallets)} configured · "
+        f"{status.get('smart_wallet_report', {}).get('qualified', 0)} qualified\n"
         f"PROTECT warnings (24h): {status.get('protects_24h', 0)}\n"
         f"Outcome observations (24h): {status.get('outcomes_24h', 0)}\n"
         f"PULSE/exceptional-flow/SCOUT/ACTION/A+ thresholds: "
@@ -640,6 +644,19 @@ async def send_first_leg_alert(
     await application.bot.send_message(
         chat_id=telegram_chat_target(scanner_config.alert_chat_id),
         text=format_alert(candidate, snapshot, result),
+        parse_mode="HTML",
+        disable_web_page_preview=True,
+    )
+
+
+async def send_wallet_discovery_alert(candidate: Candidate):
+    if not scanner_config.alert_chat_id:
+        raise RuntimeError(
+            "SIGNAL_TELEGRAM_CHAT_ID, ADMIN_CHAT_ID, or TELEGRAM_GROUP_ID is not set"
+        )
+    await application.bot.send_message(
+        chat_id=telegram_chat_target(scanner_config.alert_chat_id),
+        text=format_wallet_discovery_alert(candidate),
         parse_mode="HTML",
         disable_web_page_preview=True,
     )
@@ -973,6 +990,7 @@ async def on_startup():
             scanner_state,
             send_first_leg_alert,
             send_protect_alert,
+            send_wallet_discovery_alert,
         )
         await scanner_service.start()
         scheduler.add_job(
