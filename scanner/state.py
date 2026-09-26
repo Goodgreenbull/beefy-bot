@@ -126,6 +126,13 @@ class SQLiteState:
             CREATE INDEX IF NOT EXISTS idx_alerts_candidate_time
                 ON alerts(candidate_key, sent_at DESC);
 
+            CREATE TABLE IF NOT EXISTS wallet_discovery_alerts (
+                candidate_key TEXT PRIMARY KEY,
+                tx_hash TEXT NOT NULL,
+                sent_at TEXT NOT NULL,
+                FOREIGN KEY(candidate_key) REFERENCES candidates(candidate_key) ON DELETE CASCADE
+            );
+
             CREATE TABLE IF NOT EXISTS protective_alerts (
                 alert_id INTEGER PRIMARY KEY,
                 candidate_key TEXT NOT NULL,
@@ -851,6 +858,47 @@ class SQLiteState:
         return not cooling_down and (
             new_reawakening or (result.stage == "REAWAKENING" and meaningful_upgrade)
         )
+
+    def wallet_discovery_allowed(self, candidate_key: str) -> bool:
+        """One investigative wallet alert per token, independent of trade calls."""
+        if self.connection.execute(
+            "SELECT 1 FROM wallet_discovery_alerts WHERE candidate_key = ?", (candidate_key,)
+        ).fetchone():
+            return False
+        return not bool(self.connection.execute(
+            "SELECT 1 FROM alerts WHERE candidate_key = ? LIMIT 1", (candidate_key,)
+        ).fetchone())
+
+    def pending_wallet_discoveries(self, limit: int = 12) -> list[Candidate]:
+        """Drain unsent discoveries on later cycles without sending stale backlog."""
+        cutoff = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+        rows = self.connection.execute(
+            """SELECT c.* FROM candidates AS c
+               WHERE instr(c.source, 'wallet-swap') > 0
+                 AND c.last_seen_at >= ?
+                 AND NOT EXISTS (
+                     SELECT 1 FROM wallet_discovery_alerts AS d
+                     WHERE d.candidate_key = c.candidate_key
+                 )
+                 AND NOT EXISTS (
+                     SELECT 1 FROM alerts AS a
+                     WHERE a.candidate_key = c.candidate_key
+                 )
+               ORDER BY c.last_seen_at DESC""",
+            (cutoff,),
+        ).fetchall()
+        fresh = [candidate for row in rows
+                 if (candidate := self._candidate_from_row(row)).metadata.get("wallet_discovery_at", "") >= cutoff]
+        fresh.sort(key=lambda item: item.metadata["wallet_discovery_at"])
+        return fresh[:limit]
+
+    def record_wallet_discovery(self, candidate_key: str, tx_hash: str) -> None:
+        self.connection.execute(
+            "INSERT OR IGNORE INTO wallet_discovery_alerts(candidate_key, tx_hash, sent_at) "
+            "VALUES (?, ?, ?)",
+            (candidate_key, tx_hash, datetime.now(timezone.utc).isoformat()),
+        )
+        self.connection.commit()
 
     def record_alert(
         self,
