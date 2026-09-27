@@ -94,6 +94,11 @@ class WalletDiscoveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.state.get_cursor("wallet_swap_discovery_block:base"), "100")
         self.assertEqual(await feed.discover(None, self.state), [])
 
+    async def test_monitored_wallet_count_uses_valid_base_addresses_only(self):
+        self.config.smart_wallets = (WALLET, WALLET, "invalid")
+        feed = WalletSwapDiscoveryFeed(self.config)
+        self.assertEqual(feed.tracked_wallets(self.state), [WALLET])
+
     async def test_v2_registered_pair_with_paid_swap_is_discovered(self):
         swap = {
             "address": POOL, "topics": [V2_SWAP_TOPIC, topic(WALLET), topic(WALLET)],
