@@ -35,10 +35,12 @@ from .feeds import (
 from .models import Candidate, MarketSnapshot, ScoreResult
 from .scoring import SignalScorer
 from .state import SQLiteState
+from .wallet_discovery import WalletSwapDiscoveryFeed
 
 
 AlertCallback = Callable[[Candidate, MarketSnapshot, ScoreResult], Awaitable[None]]
 ProtectionCallback = Callable[[Candidate, MarketSnapshot, dict], Awaitable[None]]
+DiscoveryCallback = Callable[[Candidate], Awaitable[None]]
 
 
 class ScannerService:
@@ -48,11 +50,13 @@ class ScannerService:
         state: SQLiteState,
         alert_callback: AlertCallback | None = None,
         protection_callback: ProtectionCallback | None = None,
+        discovery_callback: DiscoveryCallback | None = None,
     ) -> None:
         self.config = config
         self.state = state
         self.alert_callback = alert_callback
         self.protection_callback = protection_callback
+        self.discovery_callback = discovery_callback
         self.session: aiohttp.ClientSession | None = None
         self.lock = asyncio.Lock()
         self.enricher = DexScreenerEnricher(config)
@@ -65,6 +69,7 @@ class ScannerService:
         self.overlay = SignalOverlay(config.overlay_url)
         self.smart_wallet_monitor = SmartWalletMonitor(config)
         self.feeds = [
+            WalletSwapDiscoveryFeed(config),
             BankrLaunchFeed(config),
             PoolsFunLaunchFeed(),
             FlaunchFeed(config),
@@ -95,6 +100,8 @@ class ScannerService:
             "discovered": 0,
             "enriched": 0,
             "alerts": 0,
+            "wallet_discoveries": 0,
+            "wallet_alerts": 0,
             "pulses": 0,
             "protects": 0,
             "outcomes": 0,
@@ -440,15 +447,44 @@ class ScannerService:
             warmup_complete = completed_warmups >= self.config.warmup_cycles
             discovered_lists = await asyncio.gather(*(self._run_feed(feed) for feed in self.feeds))
             discovered = [candidate for rows in discovered_lists for candidate in rows]
+            wallet_discoveries = [
+                item for item in discovered if item.source == "wallet-swap"
+            ]
             for candidate in discovered:
                 if not warmup_complete:
                     candidate.metadata["bootstrap_candidate"] = True
+                elif candidate.source == "wallet-swap":
+                    # A fresh wallet trade after startup can revive an earlier
+                    # bootstrap candidate without replaying historical alerts.
+                    candidate.metadata["bootstrap_candidate"] = False
                 self.state.upsert_candidate(candidate)
+
+            wallet_alerts = 0
+            if warmup_complete and self.discovery_callback:
+                for candidate in self.state.pending_wallet_discoveries():
+                    if wallet_alerts >= 2:
+                        break
+                    if candidate.metadata.get("bootstrap_candidate"):
+                        continue
+                    if not self.state.wallet_discovery_allowed(candidate.key):
+                        continue
+                    try:
+                        await self.discovery_callback(candidate)
+                        self.state.record_wallet_discovery(
+                            candidate.key, candidate.metadata["wallet_discovery_tx"]
+                        )
+                        self.state.mark_feed_success("telegram-discovery", 1)
+                        wallet_alerts += 1
+                    except Exception as error:
+                        self.state.mark_feed_error("telegram-discovery", error)
 
             candidates = self._balanced_active_candidates()
             outcome_candidates = self.state.list_outcome_candidates(self.config.outcome_candidate_limit)
             outcome_keys = {candidate.key for candidate in outcome_candidates}
-            candidates = list({candidate.key: candidate for candidate in candidates + outcome_candidates}.values())
+            candidates = list({
+                candidate.key: candidate
+                for candidate in wallet_discoveries[:3] + candidates + outcome_candidates
+            }.values())
             overlay_task = asyncio.create_task(self.overlay.fetch(self.session))
             wallet_task = asyncio.create_task(
                 self.smart_wallet_monitor.collect(self.session, self.state, candidates)
@@ -776,6 +812,8 @@ class ScannerService:
                 "last_cycle_at": datetime.now(timezone.utc).isoformat(),
                 "duration_seconds": round(time.monotonic() - started, 2),
                 "discovered": len(discovered),
+                "wallet_discoveries": len(wallet_discoveries),
+                "wallet_alerts": wallet_alerts,
                 "enriched": enriched_count,
                 "alerts": alert_count,
                 "pulses": pulse_count,
@@ -808,11 +846,15 @@ class ScannerService:
                 self.config.smart_wallet_min_average_return,
             )
         )
+        wallet_feed = next(
+            (feed for feed in self.feeds if isinstance(feed, WalletSwapDiscoveryFeed)), None
+        )
         return {
             **self.last_status,
             **self.state.stats(),
             "outcome_report": self.state.outcome_report(),
             "smart_wallet_report": wallet_report,
+            "base_wallets_monitored": len(wallet_feed.tracked_wallets(self.state)) if wallet_feed else 0,
             "near_misses": self.state.near_misses(),
             "screening_report": self.state.screening_report(),
             "feeds": self.state.health(),

@@ -36,3 +36,30 @@ jobs:
 
       - name: Run unit tests
         run: python -m unittest discover -s tests -v
+
+  live-smoke:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: unit-tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 18
+    steps:
+      - name: Confirm Render deployed this commit and completed a scan
+        env:
+          EXPECTED_RELEASE: ${{ github.sha }}
+        run: |
+          for attempt in $(seq 1 30); do
+            health=$(curl --fail --silent --show-error --max-time 12 https://beefy-bot.onrender.com/health) || health=""
+            if [ -n "$health" ]; then
+              echo "$health"
+              if printf '%s' "$health" | jq -e --arg release "${EXPECTED_RELEASE:0:12}" '
+                .bot == "ok" and .scanner == "running"
+                and .release == $release and .last_cycle_at != null
+                and (.wallet_discovery == "inactive" or .wallet_discovery == "healthy")
+              ' >/dev/null; then
+                exit 0
+              fi
+            fi
+            sleep 20
+          done
+          echo "Render did not report this commit with a completed scan within the smoke-check window" >&2
+          exit 1

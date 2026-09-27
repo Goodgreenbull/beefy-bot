@@ -7,6 +7,7 @@ launch APIs / profiles ─┐
 verified factory logs ──┼─> candidate state ─> market + contract enrichment
 GMGN rank/hot/signal evidence ─┤
 V2/V3 pool events ──────┘                         │
+tracked wallet swap ───────> DISCOVERY (verify first) │
 token Transfer logs ─────────────────────────────┼─> unique buyer/holder inflection
 exact-CA social / creator overlay ───────────────┤
 manual + learned smart wallets ───────────────────┤
@@ -31,6 +32,7 @@ Every external feed is isolated. One failing provider is recorded in `feed_healt
 - New pools: polls GeckoTerminal's per-network `new_pools` feed.
 - Base: polls standard V2 `PairCreated` and V3 `PoolCreated` events only from verified Uniswap and Sushi factory addresses.
 - Robinhood: polls the officially documented pons Uniswap V3 and pools.fun Sushi V3 factories, selecting the non-WETH/USDG side. It also uses HooderScan's no-key cached market endpoint for a rotating maximum of 18 candidates per cycle when direct pricing and DexScreener are unavailable. Block cursors prevent gaps during normal restarts.
+- Wallet-first Base discovery: an independent, bounded `Transfer`-recipient topic query finds new token contracts for up to 30 configured or qualified public wallets. A candidate requires the tracked wallet to have sent the transaction, a same-pool V2/V3 `Swap` with quote paid and token received, and a factory lookup confirming that the pool is registered. A transfer or balance alone never qualifies. A separate one-time `DISCOVERY` message goes out before market enrichment; trade-quality alerts still require the usual gates. This excludes contract-wallet relayers, V4/curve swaps and transfers via intermediate recipients, and depends on public RPC availability.
 - GMGN: makes seven read-only calls per cycle for Base/Robinhood 5m rank, faster 1m activity rank, launchpad trenches, and recent Robinhood smart/KOL/platform-call events. Both activity windows use the same free rank route already proven on Render; the separate 1m lists provide current-attention evidence without a paid social API. Beefy then hard-filters unsafe, illiquid, late, stock/RWA-copy, SpaceX, stablecoin and oil themes before admitting at most 80 diversified candidates. The client has an explicit route allowlist and no wallet, portfolio, quote, swap, order or signing surface.
 
 Dedicated Clanker and Zora feed lanes are disabled. In the measured free-tier run they occupied 15 of 50 analysis slots while producing one usable snapshot. Their liquid tokens remain discoverable through GeckoTerminal, DexScreener, verified pool events, or GMGN.
@@ -52,6 +54,7 @@ SQLite stores only public market data:
 - scheduled alert outcomes, MFE, and MAE;
 - early-buyer observations and aggregate wallet reputation;
 - cached public contract-risk profiles.
+- one-time non-actionable wallet discoveries, stored separately from scored alerts.
 
 The same token can arrive from several feeds and is merged by `chain:token_address`. Routine repeats are suppressed for 24 hours. One meaningful PULSE-to-trade-quality upgrade can alert after the cooldown; otherwise a repeat requires a later measured reawakening.
 
