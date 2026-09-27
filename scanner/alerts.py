@@ -4,6 +4,7 @@ import html
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
+from .config import BASE_WALLET_LABELS
 from .models import Candidate, MarketSnapshot, ScoreResult
 from .targeting import structural_target
 
@@ -154,9 +155,11 @@ def format_wallet_discovery_alert(candidate: Candidate) -> str:
     uk_time = observed.astimezone(ZoneInfo("Europe/London")).strftime("%d %b %H:%M %Z")
     lines = [
         "🔎 <b>BEEFY DISCOVERY · BASE · VERIFY FIRST</b>",
-        f"{len(wallets)} tracked wallet{'s' if len(wallets) != 1 else ''} bought from a verified pool swap.",
+        (f"{len(wallets)} tracked wallet{'s' if len(wallets) != 1 else ''} received tokens in a Uniswap V4 swap transaction. Pool/token link needs review."
+         if metadata.get("wallet_discovery_proof") == "v4-manager-net-inflow" else
+         f"{len(wallets)} tracked wallet{'s' if len(wallets) != 1 else ''} bought from a verified pool swap."),
         f"Observed {html.escape(uk_time)} · block {html.escape(str(block))}",
-        f"Wallets: {html.escape(', '.join(wallet[:8] + '…' + wallet[-4:] for wallet in wallets))}",
+        f"Wallets: {html.escape(', '.join(BASE_WALLET_LABELS.get(wallet.lower(), wallet[:8] + '…' + wallet[-4:]) for wallet in wallets))}",
         f"<b>CA:</b> <code>{html.escape(candidate.token_address)}</code>",
         f"<a href=\"https://basescan.org/tx/{html.escape(tx_hash, quote=True)}\">Swap transaction</a>",
         "MC, liquidity, sellability and deployer checks pending. Investigate; no entry verdict yet.",
