@@ -2,12 +2,12 @@ import unittest
 from datetime import datetime, timedelta, timezone
 
 from scanner.alerts import format_wallet_discovery_alert
-from scanner.config import ScannerConfig
+from scanner.config import BASE_WALLET_LABELS, ScannerConfig
 from scanner.feeds import TRANSFER_TOPIC
 from scanner.models import Candidate
 from scanner.state import SQLiteState
 from scanner.wallet_discovery import (
-    V2_SWAP_TOPIC, V3_SWAP_TOPIC, WalletSwapDiscoveryFeed,
+    BASE_V4_POOL_MANAGER, V2_SWAP_TOPIC, V3_SWAP_TOPIC, V4_SWAP_TOPIC, WalletSwapDiscoveryFeed,
 )
 
 
@@ -43,6 +43,23 @@ def v3_swap(quote_paid=10**16, token_out=10**18, recipient=WALLET):
     }
 
 
+def v4_receipt(*, token_received=10**18, token_sent=0, quote_paid=10**16, swap=True):
+    manager = BASE_V4_POOL_MANAGER
+    logs = [{"address": TOKEN,
+             "topics": [TRANSFER_TOPIC, topic(manager), topic(WALLET)],
+             "data": "0x" + word(token_received)}]
+    if token_sent:
+        logs.append({"address": TOKEN, "topics": [TRANSFER_TOPIC, topic(WALLET), topic(manager)],
+                     "data": "0x" + word(token_sent)})
+    if quote_paid:
+        logs.append({"address": WETH, "topics": [TRANSFER_TOPIC, topic(WALLET), topic(manager)],
+                     "data": "0x" + word(quote_paid)})
+    if swap:
+        logs.append({"address": manager, "topics": [V4_SWAP_TOPIC, "0x" + "a" * 64, topic(manager)],
+                     "data": "0x" + word(10**16) + word((1 << 256) - 10**18) + word(0) * 4})
+    return {"status": "0x1", "from": WALLET, "logs": logs}
+
+
 class FakeWalletFeed(WalletSwapDiscoveryFeed):
     def __init__(self, config, logs, receipt, factory=FACTORY):
         super().__init__(config)
@@ -51,6 +68,7 @@ class FakeWalletFeed(WalletSwapDiscoveryFeed):
         self.factory = factory
         self.fail_receipt = False
         self.fail_pool_call = None
+        self.tx_value = "0x0"
 
     async def _rpc(self, session, method, params):
         if method == "eth_blockNumber":
@@ -61,6 +79,8 @@ class FakeWalletFeed(WalletSwapDiscoveryFeed):
             if self.fail_receipt:
                 raise RuntimeError("provider unavailable")
             return self.receipt
+        if method == "eth_getTransactionByHash":
+            return {"from": WALLET, "value": self.tx_value}
         if method == "eth_call":
             address, data = params[0]["to"].lower(), params[0]["data"]
             if self.fail_pool_call and address == POOL:
@@ -163,6 +183,43 @@ class WalletDiscoveryTests(unittest.IsolatedAsyncioTestCase):
             {"status": "0x1", "from": "0x" + "6" * 40, "logs": [v3_swap()]},
         )
         self.assertEqual(await feed.discover(None, self.state), [])
+
+    async def test_v4_manager_quote_paid_and_net_received_is_investigation_only(self):
+        output = transfer()
+        output["topics"][1] = topic(BASE_V4_POOL_MANAGER)
+        feed = FakeWalletFeed(self.config, [output], v4_receipt())
+        found = await feed.discover(None, self.state)
+        self.assertEqual([candidate.token_address for candidate in found], [TOKEN])
+        self.assertFalse(found[0].metadata["wallet_discovery_factory_verified"])
+        self.assertIn("Pool/token link needs review", format_wallet_discovery_alert(found[0]))
+
+    async def test_v4_native_quote_requires_value_and_swap(self):
+        output = transfer()
+        output["topics"][1] = topic(BASE_V4_POOL_MANAGER)
+        feed = FakeWalletFeed(self.config, [output], v4_receipt(quote_paid=0))
+        self.assertEqual(await feed.discover(None, self.state), [])
+        self.state.set_cursor("wallet_swap_discovery_block:base", "99")
+        feed.tx_value = hex(10**16)
+        self.assertEqual(len(await feed.discover(None, self.state)), 1)
+
+    async def test_v4_sell_roundtrip_or_gift_does_not_trigger(self):
+        output = transfer()
+        output["topics"][1] = topic(BASE_V4_POOL_MANAGER)
+        for receipt in (v4_receipt(token_sent=10**18), v4_receipt(swap=False)):
+            feed = FakeWalletFeed(self.config, [output], receipt)
+            self.assertEqual(await feed.discover(None, self.state), [])
+            self.state.set_cursor("wallet_swap_discovery_block:base", "99")
+
+    async def test_named_wallets_are_in_production_config_and_alert(self):
+        from unittest.mock import patch
+        with patch.dict("os.environ", {"SCANNER_SMART_WALLETS": WALLET}):
+            configured = ScannerConfig.from_env().smart_wallets
+        self.assertEqual(set(configured), {*BASE_WALLET_LABELS, WALLET})
+        candidate = Candidate(chain="base", token_address=TOKEN, source="wallet-swap",
+                              metadata={"wallet_discovery_at": datetime.now(timezone.utc).isoformat(),
+                                        "wallet_discovery_tx": TX,
+                                        "wallet_discovery_wallets": [next(iter(BASE_WALLET_LABELS))]})
+        self.assertIn("onchainslut.base.eth", format_wallet_discovery_alert(candidate))
 
     async def test_discovery_alert_does_not_block_later_trade_call(self):
         candidate = Candidate(
