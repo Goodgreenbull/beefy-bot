@@ -481,7 +481,8 @@ async def scannerstatus_command(update: Update, context: ContextTypes.DEFAULT_TY
         f"Wallet discoveries this cycle: {status.get('wallet_discoveries', 0)} "
         f"(sent {status.get('wallet_alerts', 0)})\n"
         f"Tracked wallets: {len(scanner_config.smart_wallets)} configured · "
-        f"{status.get('smart_wallet_report', {}).get('qualified', 0)} qualified\n"
+        f"{status.get('smart_wallet_report', {}).get('qualified', 0)} qualified "
+        f"· {status.get('base_wallets_monitored', 0)} monitored on Base\n"
         f"PROTECT warnings (24h): {status.get('protects_24h', 0)}\n"
         f"Outcome observations (24h): {status.get('outcomes_24h', 0)}\n"
         f"PULSE/exceptional-flow/SCOUT/ACTION/A+ thresholds: "
@@ -899,6 +900,19 @@ async def health():
     if scanner_service is None:
         return {"bot": "ok", "scanner": "disabled", "release": release}
     status = scanner_service.status()
+    wallet_feed = next(
+        (item for item in status.get("feeds", [])
+         if item.get("feed_name") == "wallet-swap-discovery:base"),
+        {},
+    )
+    if not status.get("base_wallets_monitored"):
+        wallet_discovery_status = "inactive"
+    elif wallet_feed.get("last_error"):
+        wallet_discovery_status = "error"
+    elif wallet_feed.get("last_success_at"):
+        wallet_discovery_status = "healthy"
+    else:
+        wallet_discovery_status = "pending"
     attention_feeds = [
         item
         for item in status.get("feeds", [])
@@ -923,6 +937,8 @@ async def health():
         "pulses_24h": status.get("pulses_24h", 0),
         "protects_24h": status.get("protects_24h", 0),
         "feeds_with_errors": status.get("errors", 0),
+        "wallet_discovery": wallet_discovery_status,
+        "base_wallets_monitored": status.get("base_wallets_monitored", 0),
     }
 
 @app.route(WEBHOOK_PATH, methods=["POST"])
