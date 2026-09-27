@@ -1,8 +1,8 @@
 """Base-first discovery from verified swaps made by tracked public wallets.
 
-This lane is deliberately narrower than a general transfer monitor. A pool-to-
-wallet Transfer is accepted only when the same transaction contains a matching
-Swap with quote paid and the pool is registered at an allowlisted factory.
+For V2/V3, require a registered pool and a matching paid Swap. For Uniswap V4,
+require a direct PoolManager output, net token receipt, paid quote and a
+PoolManager Swap; the V4 pool ID is not independently linked to that output.
 """
 
 from __future__ import annotations
@@ -12,7 +12,7 @@ import re
 
 import aiohttp
 
-from .config import ScannerConfig
+from .config import BASE_QUOTES, ScannerConfig
 from .feeds import TRANSFER_TOPIC, _abi_words, _address_from_topic, _address_from_word
 from .models import Candidate, normalise_address, utc_now
 from .state import SQLiteState
@@ -20,6 +20,8 @@ from .state import SQLiteState
 
 V2_SWAP_TOPIC = "0xd78ad95fa46c994b6551d0da85fc275fe613ce37657fb8d5e3d130840159d822"
 V3_SWAP_TOPIC = "0xc42079f94a6350d7e6235f29174924f928cc2ac818eb64fed8004e115fbcca67"
+V4_SWAP_TOPIC = "0x40e9cecb9f5f1f1c5b9c97dec2917b7ee92e57ba5563708daca94dd84ad7112f"
+BASE_V4_POOL_MANAGER = "0x498581ff718922c3f8e6a244956af099b2652b2b"
 FACTORY_SELECTOR = "0xc45a0155"
 TOKEN0_SELECTOR = "0x0dfe1681"
 TOKEN1_SELECTOR = "0xd21220a7"
@@ -37,7 +39,7 @@ def _signed_256(value: int) -> int:
 
 
 class WalletSwapDiscoveryFeed:
-    """Find previously unknown Base tokens bought from verified V2/V3 pools."""
+    """Find Base tokens acquired in verified V2/V3 or V4 swap transactions."""
 
     name = "wallet-swap-discovery:base"
 
@@ -125,6 +127,55 @@ class WalletSwapDiscoveryFeed:
             return amounts[quote_index] > 0 and amounts[token_index] < 0
         return False
 
+    @staticmethod
+    def _v4_acquisition(
+        receipt: dict, token: str, wallet: str, manager: str, native_paid: bool = False
+    ) -> bool:
+        """Require V4 swap activity, net token inflow and a wallet-funded quote.
+
+        V4's singleton event identifies a pool by ID, not by ERC20 address.
+        This is a lower-confidence discovery, never proof of a token/pool pair.
+        """
+        logs = receipt.get("logs") or []
+        swaps = [row for row in logs
+                 if normalise_address(row.get("address")) == manager
+                 and (row.get("topics") or [""])[0].lower() == V4_SWAP_TOPIC
+                 and len(row.get("topics") or []) == 3]
+        if not swaps:
+            return False
+        if not any(
+            len(words := _abi_words(row.get("data"))) >= 2
+            and _signed_256(words[0]) * _signed_256(words[1]) < 0
+            for row in swaps
+        ):
+            return False
+        received = sent = 0
+        paid_quote = native_paid
+        swap_senders = {_address_from_topic(row["topics"][2]) for row in swaps}
+        for row in logs:
+            topics = row.get("topics") or []
+            if len(topics) != 3 or topics[0].lower() != TRANSFER_TOPIC:
+                continue
+            asset = normalise_address(row.get("address"))
+            sender = _address_from_topic(topics[1])
+            receiver = _address_from_topic(topics[2])
+            try:
+                amount = _abi_words(row.get("data"))
+            except ValueError:
+                continue
+            if len(amount) != 1:
+                continue
+            if asset == token:
+                if sender == wallet:
+                    sent += amount[0]
+                if receiver == wallet and sender == manager:
+                    received += amount[0]
+            elif (asset in BASE_QUOTES
+                  and sender == wallet and receiver in {manager, *swap_senders}
+                  and amount[0] > 0):
+                paid_quote = True
+        return received > sent and paid_quote
+
     async def discover(self, session: aiohttp.ClientSession, state: SQLiteState) -> list[Candidate]:
         selected_wallets = self.tracked_wallets(state)
         wallets = set(selected_wallets)
@@ -162,6 +213,7 @@ class WalletSwapDiscoveryFeed:
                 hashes.add(tx_hash)
                 selected.append(log)
         receipt_cache: dict[str, dict] = {}
+        tx_cache: dict[str, dict] = {}
         pool_cache: dict[tuple[str, str, str], tuple[int, int] | None] = {}
         candidates: dict[str, Candidate] = {}
         observed_at = utc_now()
@@ -182,6 +234,39 @@ class WalletSwapDiscoveryFeed:
             if (not isinstance(receipt, dict)
                     or int(receipt.get("status", "0x0"), 16) != 1
                     or normalise_address(receipt.get("from")) != wallet):
+                continue
+            proof = "v2-v3-registered-pool"
+            if pool == BASE_V4_POOL_MANAGER:
+                if not self._v4_acquisition(receipt, token, wallet, pool, native_paid=True):
+                    continue
+                if not self._v4_acquisition(receipt, token, wallet, pool):
+                    # Native-ETH funded V4 buys have no ERC20 quote debit from
+                    # the EOA. Fetch the transaction only for this V4 case.
+                    if tx_hash not in tx_cache:
+                        tx_cache[tx_hash] = await self._rpc(
+                            session, "eth_getTransactionByHash", [tx_hash]
+                        )
+                    tx = tx_cache[tx_hash]
+                    if (not isinstance(tx, dict)
+                            or int(tx.get("value", "0x0"), 16) < 10**15
+                            or not self._v4_acquisition(receipt, token, wallet, pool, native_paid=True)):
+                        continue
+                candidate = candidates.get(token)
+                if candidate is None:
+                    candidates[token] = candidate = Candidate(
+                        chain="base", token_address=token, source="wallet-swap",
+                        discovered_at=observed_at,
+                        metadata={
+                            "wallet_discovery_at": observed_at.isoformat(),
+                            "wallet_discovery_block": int(log["blockNumber"], 16),
+                            "wallet_discovery_tx": tx_hash,
+                            "wallet_discovery_wallets": [],
+                            "wallet_discovery_factory_verified": False,
+                            "wallet_discovery_proof": "v4-manager-net-inflow",
+                        },
+                    )
+                if wallet not in candidate.metadata["wallet_discovery_wallets"]:
+                    candidate.metadata["wallet_discovery_wallets"].append(wallet)
                 continue
             swap_logs = [
                 row for row in receipt.get("logs", [])
@@ -209,6 +294,7 @@ class WalletSwapDiscoveryFeed:
                             "wallet_discovery_tx": tx_hash,
                             "wallet_discovery_wallets": [],
                             "wallet_discovery_factory_verified": True,
+                            "wallet_discovery_proof": proof,
                         },
                     )
                     candidates[token] = candidate
