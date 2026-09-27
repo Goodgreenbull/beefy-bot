@@ -11,6 +11,13 @@ BASE_QUOTES = {
     "0x50c5725949a6f0c72e6c4a641f24049a917db0cb",  # DAI
 }
 
+# Public BaseScan names, checked on 2026-09-27. These are user-requested
+# watch targets, not a claim that either address is a profitable trader.
+BASE_WALLET_LABELS = {
+    "0xddbcdf710c21219dc5e56a6e1e8576fb4aa99d96": "onchainslut.base.eth",
+    "0xf703fd64093b50797abdc9e450632240fa2ba5d4": "kien28.base.eth",
+}
+
 ROBINHOOD_QUOTES = {
     "0x0bd7d308f8e1639fab988df18a8011f41eacad73",  # WETH
     "0x5fc5360d0400a0fd4f2af552add042d716f1d168",  # USDG
@@ -234,7 +241,7 @@ class ScannerConfig:
             max_flow_transactions=max(10, _int("SCANNER_MAX_FLOW_TRANSACTIONS", 60)),
             auto_calibrate=_bool("SCANNER_AUTO_CALIBRATE", True),
             calibration_min_samples=max(20, _int("SCANNER_CALIBRATION_MIN_SAMPLES", 30)),
-            smart_wallets=_csv("SCANNER_SMART_WALLETS"),
+            smart_wallets=tuple(dict.fromkeys((*BASE_WALLET_LABELS, *_csv("SCANNER_SMART_WALLETS")))),
             auto_curate_smart_wallets=_bool("SCANNER_AUTO_CURATE_SMART_WALLETS", True),
             smart_wallet_min_observations=max(
                 2, _int("SCANNER_SMART_WALLET_MIN_OBSERVATIONS", 3)
