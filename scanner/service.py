@@ -846,11 +846,15 @@ class ScannerService:
                 self.config.smart_wallet_min_average_return,
             )
         )
+        wallet_feed = next(
+            (feed for feed in self.feeds if isinstance(feed, WalletSwapDiscoveryFeed)), None
+        )
         return {
             **self.last_status,
             **self.state.stats(),
             "outcome_report": self.state.outcome_report(),
             "smart_wallet_report": wallet_report,
+            "base_wallets_monitored": len(wallet_feed.tracked_wallets(self.state)) if wallet_feed else 0,
             "near_misses": self.state.near_misses(),
             "screening_report": self.state.screening_report(),
             "feeds": self.state.health(),
