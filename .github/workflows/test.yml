@@ -54,6 +54,7 @@ jobs:
               if printf '%s' "$health" | jq -e --arg release "${EXPECTED_RELEASE:0:12}" '
                 .bot == "ok" and .scanner == "running"
                 and .release == $release and .last_cycle_at != null
+                and (.wallet_discovery == "inactive" or .wallet_discovery == "healthy")
               ' >/dev/null; then
                 exit 0
               fi
