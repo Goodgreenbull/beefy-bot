@@ -45,6 +45,23 @@ class WalletSwapDiscoveryFeed:
         self.config = config
         self.rpc_url = config.base_rpc_url
 
+    def tracked_wallets(self, state: SQLiteState) -> list[str]:
+        """Select configured and proven Base wallets without exposing addresses in health."""
+        configured = sorted({
+            normalise_address(wallet)
+            for wallet in self.config.smart_wallets
+            if re.fullmatch(r"0x[0-9a-f]{40}", normalise_address(wallet))
+        })
+        curated: set[str] = set()
+        if self.config.auto_curate_smart_wallets:
+            curated = state.curated_smart_wallets(
+                self.config.smart_wallet_min_observations,
+                self.config.smart_wallet_min_win_rate,
+                self.config.smart_wallet_min_average_return,
+                chain="base",
+            )
+        return (configured + sorted(curated - set(configured)))[:30]
+
     async def _rpc(self, session: aiohttp.ClientSession, method: str, params: list[Any]) -> Any:
         async with session.post(
             self.rpc_url,
@@ -109,21 +126,7 @@ class WalletSwapDiscoveryFeed:
         return False
 
     async def discover(self, session: aiohttp.ClientSession, state: SQLiteState) -> list[Candidate]:
-        configured = sorted({
-            normalise_address(wallet)
-            for wallet in self.config.smart_wallets
-            if re.fullmatch(r"0x[0-9a-f]{40}", normalise_address(wallet))
-        })
-        curated: set[str] = set()
-        if self.config.auto_curate_smart_wallets:
-            curated = state.curated_smart_wallets(
-                self.config.smart_wallet_min_observations,
-                self.config.smart_wallet_min_win_rate,
-                self.config.smart_wallet_min_average_return,
-                chain="base",
-            )
-        # Operator-verified wallets keep priority if a learned cohort grows.
-        selected_wallets = (configured + sorted(curated - set(configured)))[:30]
+        selected_wallets = self.tracked_wallets(state)
         wallets = set(selected_wallets)
         if not wallets:
             return []
