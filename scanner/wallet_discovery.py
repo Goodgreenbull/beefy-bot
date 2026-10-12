@@ -16,6 +16,7 @@ from .config import BASE_QUOTES, ScannerConfig
 from .feeds import TRANSFER_TOPIC, _abi_words, _address_from_topic, _address_from_word
 from .models import Candidate, normalise_address, utc_now
 from .state import SQLiteState
+from .rpc import rpc_call
 
 
 V2_SWAP_TOPIC = "0xd78ad95fa46c994b6551d0da85fc275fe613ce37657fb8d5e3d130840159d822"
@@ -65,18 +66,10 @@ class WalletSwapDiscoveryFeed:
         return (configured + sorted(curated - set(configured)))[:30]
 
     async def _rpc(self, session: aiohttp.ClientSession, method: str, params: list[Any]) -> Any:
-        async with session.post(
-            self.rpc_url,
-            json={"jsonrpc": "2.0", "id": 1, "method": method, "params": params},
-        ) as response:
-            if response.status >= 400:
-                raise RuntimeError(f"wallet discovery RPC HTTP {response.status}")
-            body = await response.json(content_type=None)
-        if body.get("error"):
-            raise RuntimeError(body["error"].get("message", "wallet discovery RPC error"))
-        if body.get("result") is None:
+        result = await rpc_call(session, self.rpc_url, method, params, self.config, chain="base")
+        if result is None:
             raise RuntimeError(f"wallet discovery RPC missing {method} result")
-        return body["result"]
+        return result
 
     async def _call(self, session: aiohttp.ClientSession, address: str, data: str) -> str:
         return await self._rpc(session, "eth_call", [{"to": address, "data": data}, "latest"])

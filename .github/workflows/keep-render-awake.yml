@@ -19,10 +19,21 @@ jobs:
     timeout-minutes: 3
     steps:
       - name: Ping Beefy Bot health endpoint
-        run: >-
-          curl --fail --silent --show-error
-          --max-time 90
-          --retry 2
-          --retry-delay 5
-          --retry-all-errors
-          https://beefy-bot.onrender.com/health
+        run: |
+          for attempt in 1 2 3; do
+            health=$(curl --fail --silent --show-error --max-time 30 \
+              https://beefy-bot.onrender.com/health) || health=""
+            if [ -n "$health" ]; then
+              echo "$health"
+              if printf '%s' "$health" | jq -e '
+                .bot == "ok" and .scanner == "running" and .scanner_cycle_fresh == true
+                and (.wallet_discovery == "inactive" or .wallet_discovery == "healthy")
+                and .telegram_delivery != "error"
+              ' >/dev/null; then
+                exit 0
+              fi
+            fi
+            sleep 10
+          done
+          echo "Beefy scanner, wallet feed, or Telegram delivery needs attention" >&2
+          exit 1

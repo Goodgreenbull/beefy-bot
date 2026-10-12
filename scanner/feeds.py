@@ -11,6 +11,7 @@ import uuid
 import aiohttp
 
 from .config import ScannerConfig
+from .rpc import rpc_call, rpc_payload
 from .models import Candidate, MarketSnapshot, SecurityProfile, normalise_address, utc_now
 
 if TYPE_CHECKING:
@@ -1142,16 +1143,7 @@ class FactoryLaunchFeed:
         self.name = f"platform-launches:{chain}"
 
     async def _rpc(self, session: aiohttp.ClientSession, method: str, params: list[Any]) -> Any:
-        async with session.post(
-            self.rpc_url,
-            json={"jsonrpc": "2.0", "id": 1, "method": method, "params": params},
-        ) as response:
-            if response.status >= 400:
-                raise RuntimeError(f"platform RPC HTTP {response.status} on {self.chain}")
-            body = await response.json(content_type=None)
-        if body.get("error"):
-            raise RuntimeError(body["error"].get("message", "platform RPC error"))
-        return body.get("result")
+        return await rpc_call(session, self.rpc_url, method, params, self.config, chain=self.chain)
 
     async def _block_times(
         self, session: aiohttp.ClientSession, block_numbers: set[int]
@@ -1162,8 +1154,7 @@ class FactoryLaunchFeed:
             {"jsonrpc": "2.0", "id": number, "method": "eth_getBlockByNumber", "params": [hex(number), False]}
             for number in block_numbers
         ]
-        async with session.post(self.rpc_url, json=requests) as response:
-            rows = await response.json(content_type=None)
+        rows = await rpc_payload(session, self.rpc_url, requests, self.config, chain=self.chain)
         return {
             int(row["id"]): datetime.fromtimestamp(int(row["result"]["timestamp"], 16), timezone.utc)
             for row in rows if isinstance(rows, list)
@@ -1372,16 +1363,7 @@ class RpcPairFeed:
         self.name = f"rpc-pairs:{chain}"
 
     async def _rpc(self, session: aiohttp.ClientSession, method: str, params: list[Any]) -> Any:
-        async with session.post(
-            self.rpc_url,
-            json={"jsonrpc": "2.0", "id": 1, "method": method, "params": params},
-        ) as response:
-            if response.status >= 400:
-                raise RuntimeError(f"RPC HTTP {response.status} on {self.chain}")
-            body = await response.json(content_type=None)
-        if body.get("error"):
-            raise RuntimeError(f"RPC {self.chain} {method}: {body['error'].get('message', 'unknown error')}")
-        return body.get("result")
+        return await rpc_call(session, self.rpc_url, method, params, self.config, chain=self.chain)
 
     async def _block_times(
         self, session: aiohttp.ClientSession, block_numbers: set[int]
@@ -1392,10 +1374,7 @@ class RpcPairFeed:
             {"jsonrpc": "2.0", "id": number, "method": "eth_getBlockByNumber", "params": [hex(number), False]}
             for number in block_numbers
         ]
-        async with session.post(self.rpc_url, json=requests) as response:
-            if response.status >= 400:
-                raise RuntimeError(f"RPC block lookup HTTP {response.status} on {self.chain}")
-            rows = await response.json(content_type=None)
+        rows = await rpc_payload(session, self.rpc_url, requests, self.config, chain=self.chain)
         result: dict[int, datetime] = {}
         for row in rows if isinstance(rows, list) else []:
             block = row.get("result") or {}
@@ -2146,26 +2125,8 @@ class OnchainFlowEnricher:
         payload: dict[str, Any] | list[dict[str, Any]],
         label: str,
     ) -> Any:
-        lock = self._request_locks.setdefault(url, asyncio.Lock())
-        async with lock:
-            for attempt in range(3):
-                elapsed = asyncio.get_running_loop().time() - self._last_request_at.get(url, 0.0)
-                if elapsed < 0.20:
-                    await asyncio.sleep(0.20 - elapsed)
-                async with session.post(url, json=payload) as response:
-                    self._last_request_at[url] = asyncio.get_running_loop().time()
-                    if response.status == 429:
-                        retry_header = getattr(response, "headers", {}).get("Retry-After")
-                        try:
-                            retry_after = float(retry_header)
-                        except (TypeError, ValueError):
-                            retry_after = 0.75 * (2 ** attempt)
-                    elif response.status >= 400:
-                        raise RuntimeError(f"{label} HTTP {response.status}")
-                    else:
-                        return await response.json(content_type=None)
-                await asyncio.sleep(min(4.0, max(0.5, retry_after)))
-        raise RuntimeError(f"{label} HTTP 429 after retries")
+        chain = "base" if url == self.config.base_rpc_url else "robinhood"
+        return await rpc_payload(session, url, payload, self.config, chain=chain)
 
     async def _rpc(
         self,
@@ -2503,13 +2464,8 @@ class SmartWalletMonitor:
         }
 
     async def _rpc(self, session: aiohttp.ClientSession, url: str, method: str, params: list[Any]) -> Any:
-        async with session.post(url, json={"jsonrpc": "2.0", "id": 1, "method": method, "params": params}) as response:
-            if response.status >= 400:
-                raise RuntimeError(f"smart-wallet RPC HTTP {response.status}")
-            payload = await response.json(content_type=None)
-        if payload.get("error"):
-            raise RuntimeError(payload["error"].get("message", "smart-wallet RPC error"))
-        return payload.get("result")
+        chain = "base" if url == self.config.base_rpc_url else "robinhood"
+        return await rpc_call(session, url, method, params, self.config, chain=chain)
 
     async def collect(
         self, session: aiohttp.ClientSession, state: "SQLiteState", candidates: list[Candidate]
