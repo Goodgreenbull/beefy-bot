@@ -1,0 +1,63 @@
+name: Scanner Recovery Diagnostics
+
+on:
+  push:
+    branches: [fix/scanner-recovery-2026-10-12]
+    paths: [.github/workflows/scanner-diagnostics.yml]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  feeds:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install aiohttp
+      - name: Read-only scanner dependency checks
+        run: |
+          python - <<'PY'
+          import asyncio, re
+          from dataclasses import replace
+          from scanner.config import ScannerConfig
+          from scanner.service import ScannerService
+          from scanner.state import SQLiteState
+          from scanner.feeds import TRANSFER_TOPIC
+          from scanner.wallet_discovery import WalletSwapDiscoveryFeed
+
+          async def main():
+              config = replace(ScannerConfig.from_env(), http_timeout_seconds=15,
+                               rpc_lookback_blocks=300, rpc_max_block_span=300)
+              state = SQLiteState(":memory:")
+              service = ScannerService(config, state)
+              await service.start()
+              async def run(feed):
+                  try:
+                      rows = await asyncio.wait_for(feed.discover(service.session, state), 90)
+                      print(feed.name, "OK", len(rows), flush=True)
+                  except Exception as error:
+                      detail = re.sub(r"https?://\S+", "[provider URL]", str(error))
+                      print(feed.name, "ERROR", type(error).__name__, detail[:200], flush=True)
+              await asyncio.gather(*(run(feed) for feed in service.feeds))
+              wallet = WalletSwapDiscoveryFeed(config)
+              try:
+                  latest = int(await wallet._rpc(service.session, "eth_blockNumber", []), 16)-2
+                  topics = ["0x"+a[2:].rjust(64, "0") for a in config.smart_wallets]
+                  for span in (300, 100, 10):
+                      try:
+                          rows = await wallet._rpc(service.session, "eth_getLogs", [{
+                              "fromBlock": hex(latest-span+1), "toBlock": hex(latest),
+                              "topics": [TRANSFER_TOPIC, None, topics]}])
+                          print("wallet getLogs span", span, "OK", len(rows), flush=True)
+                      except Exception as error:
+                          print("wallet getLogs span", span, type(error).__name__, str(error)[:200], flush=True)
+              except Exception as error:
+                  print("wallet RPC probe", type(error).__name__, str(error)[:200], flush=True)
+              await service.stop()
+          asyncio.run(main())
+          PY
