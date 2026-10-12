@@ -1,6 +1,17 @@
 """Public diagnostics without provider URLs, credentials, or chat identifiers."""
 
 from datetime import datetime, timezone
+import re
+
+
+def log_feed_error(name, error, credentials=()):
+    message = str(error)
+    for credential in credentials:
+        if credential:
+            message = message.replace(credential, "[redacted]")
+    message = re.sub(r"https?://\S+", "[provider URL]", message)
+    message = re.sub(r"[A-Za-z0-9_:/+\-]{32,}", "[redacted]", message)
+    print(f"Scanner feed {name}: {type(error).__name__}: {message[:220]}", flush=True)
 
 
 def error_category(error):

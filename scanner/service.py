@@ -36,6 +36,7 @@ from .models import Candidate, MarketSnapshot, ScoreResult
 from .scoring import SignalScorer
 from .state import SQLiteState
 from .wallet_discovery import WalletSwapDiscoveryFeed
+from .health import log_feed_error
 
 
 AlertCallback = Callable[[Candidate, MarketSnapshot, ScoreResult], Awaitable[None]]
@@ -130,6 +131,7 @@ class ScannerService:
             return items
         except Exception as error:
             self.state.mark_feed_error(feed.name, error)
+            log_feed_error(feed.name, error, (self.config.gmgn_api_key,))
             return []
 
     async def _enrich(
@@ -508,6 +510,7 @@ class ScannerService:
             except Exception as error:
                 wallet_signals = {}
                 self.state.mark_feed_error("smart-wallets", error)
+                log_feed_error("smart-wallets", error, (self.config.gmgn_api_key,))
 
             direct_sources = {
                 "bankr",
