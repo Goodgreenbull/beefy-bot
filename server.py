@@ -23,6 +23,7 @@ from scanner import ScannerConfig, ScannerService, SQLiteState
 from scanner.alerts import format_alert, format_protect_alert, format_wallet_discovery_alert
 from scanner.models import Candidate, MarketSnapshot, ScoreResult
 from scanner.health import public_diagnostics
+from scanner.diagnostics import probe_base_rpcs
 
 TOKEN             = os.getenv("BOT_TOKEN")
 ADMIN_USERNAME    = os.getenv("ADMIN_USERNAME", "BeefytheBull")
@@ -932,6 +933,7 @@ async def health():
         "bot": "ok",
         "scanner": "running" if scanner_config.enabled else "disabled",
         **public_diagnostics(status, scanner_config.interval_seconds),
+        "rpc_recovery_probes": getattr(scanner_service, "rpc_recovery_probes", {}),
         "release": release,
         "last_cycle_at": status.get("last_cycle_at"),
         "gmgn_candidates": status.get("gmgn_candidates", 0),
@@ -1012,6 +1014,9 @@ async def on_startup():
         )
         await scanner_service.start()
         if os.getenv("SCANNER_RECOVERY_TEST", "false").lower() == "true":
+            async def run_rpc_probes():
+                scanner_service.rpc_recovery_probes = await probe_base_rpcs(scanner_config.smart_wallets)
+            asyncio.create_task(run_rpc_probes())
             try:
                 if not scanner_config.alert_chat_id:
                     raise RuntimeError("No alert destination configured")
