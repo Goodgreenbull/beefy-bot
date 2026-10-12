@@ -5,6 +5,8 @@ from scanner.config import ScannerConfig
 from scanner.rpc import rpc_call, rpc_payload
 from scanner.state import SQLiteState
 from scanner.wallet_discovery import WalletSwapDiscoveryFeed
+from scanner.feeds import SmartWalletMonitor, TRANSFER_TOPIC
+from scanner.models import Candidate
 from tests.test_feeds import FakeResponse
 
 
@@ -111,3 +113,31 @@ class RpcRecoveryTests(unittest.IsolatedAsyncioTestCase):
             await rpc_call(session, PRIMARY, "eth_getLogs", [{
                 "fromBlock": "0x1", "toBlock": "0x2", "address": ["first", "second"],
             }], self.config, chain="base")
+
+    async def test_robinhood_failure_keeps_confirmed_base_wallet_analysis(self):
+        wallet, token, pool = ("0x"+digit*40 for digit in ("5", "3", "4"))
+        self.config.smart_wallets = (wallet,)
+        self.config.auto_curate_smart_wallets = False
+        monitor = SmartWalletMonitor(self.config)
+        state = SQLiteState(":memory:")
+        self.addCleanup(state.close)
+        async def rpc(session, url, method, params):
+            if url == self.config.robinhood_rpc_url:
+                raise RuntimeError("RPC HTTP 403")
+            if method == "eth_blockNumber":
+                return "0x100"
+            if len(params[0]["topics"]) == 3:
+                return [{"address": token, "topics": [TRANSFER_TOPIC,
+                        "0x"+pool[2:].rjust(64, "0"), "0x"+wallet[2:].rjust(64, "0")]}]
+            return []
+        monitor._rpc = AsyncMock(side_effect=rpc)
+        candidates = [Candidate(chain=chain, token_address=token, pair_address=pool, source="test")
+                      for chain in ("base", "robinhood")]
+        results = await monitor.collect(None, state, candidates)
+        self.assertEqual(results[f"base:{token}"]["smart_wallet_buys"], 1)
+        self.assertNotIn(f"robinhood:{token}", results)
+        self.assertEqual(state.get_cursor("smart_wallet_block:base"), "256")
+        self.assertIsNone(state.get_cursor("smart_wallet_block:robinhood"))
+        errors = {row["feed_name"]: row["last_error"] for row in state.health()}
+        self.assertIsNone(errors["smart-wallets:base"])
+        self.assertIn("HTTP 403", errors["smart-wallets:robinhood"])

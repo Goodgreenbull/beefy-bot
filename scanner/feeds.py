@@ -12,6 +12,7 @@ import aiohttp
 
 from .config import ScannerConfig
 from .rpc import rpc_call, rpc_payload
+from .health import log_feed_error
 from .models import Candidate, MarketSnapshot, SecurityProfile, normalise_address, utc_now
 
 if TYPE_CHECKING:
@@ -2493,42 +2494,55 @@ class SmartWalletMonitor:
         buys_by_key: dict[str, set[str]] = defaultdict(set)
         sells_by_key: dict[str, set[str]] = defaultdict(set)
         for chain, addresses in grouped.items():
-            wallets = self.configured_wallets | curated_by_chain.get(chain, set())
-            wallet_topics = [
-                "0x" + wallet.removeprefix("0x").rjust(64, "0") for wallet in wallets
-            ]
-            if not wallet_topics:
-                continue
-            url = self.rpc_urls[chain]
-            latest = int(await self._rpc(session, url, "eth_blockNumber", []), 16)
-            cursor_key = f"smart_wallet_block:{chain}"
-            stored = state.get_cursor(cursor_key)
-            start = int(stored) + 1 if stored is not None else latest - self.config.rpc_lookback_blocks + 1
-            start = max(0, start, latest - self.config.rpc_max_block_span + 1)
-            if start > latest:
-                continue
-            for index in range(0, len(set(addresses)), 20):
-                token_batch = list(dict.fromkeys(addresses))[index : index + 20]
-                common = {"fromBlock": hex(start), "toBlock": hex(latest), "address": token_batch}
-                incoming, outgoing = await asyncio.gather(
-                    self._rpc(session, url, "eth_getLogs", [{**common, "topics": [TRANSFER_TOPIC, None, wallet_topics]}]),
-                    self._rpc(session, url, "eth_getLogs", [{**common, "topics": [TRANSFER_TOPIC, wallet_topics]}]),
-                )
-                for log in incoming or []:
-                    key = f"{chain}:{normalise_address(log.get('address'))}"
-                    topics = log.get("topics") or []
-                    source = _address_from_topic(topics[1] if len(topics) > 1 else None)
-                    recipient = _address_from_topic(topics[2] if len(topics) > 2 else None)
-                    if source == pair_by_key.get(key) and recipient in wallets:
-                        buys_by_key[key].add(recipient)
-                for log in outgoing or []:
-                    key = f"{chain}:{normalise_address(log.get('address'))}"
-                    topics = log.get("topics") or []
-                    sender = _address_from_topic(topics[1] if len(topics) > 1 else None)
-                    recipient = _address_from_topic(topics[2] if len(topics) > 2 else None)
-                    if recipient == pair_by_key.get(key) and sender in wallets:
-                        sells_by_key[key].add(sender)
-            state.set_cursor(cursor_key, str(latest))
+            try:
+                wallets = self.configured_wallets | curated_by_chain.get(chain, set())
+                wallet_topics = [
+                    "0x" + wallet.removeprefix("0x").rjust(64, "0") for wallet in wallets
+                ]
+                if not wallet_topics:
+                    continue
+                url = self.rpc_urls[chain]
+                latest = int(await self._rpc(session, url, "eth_blockNumber", []), 16)
+                cursor_key = f"smart_wallet_block:{chain}"
+                stored = state.get_cursor(cursor_key)
+                start = int(stored) + 1 if stored is not None else latest - self.config.rpc_lookback_blocks + 1
+                start = max(0, start, latest - self.config.rpc_max_block_span + 1)
+                if start > latest:
+                    continue
+                for index in range(0, len(set(addresses)), 20):
+                    token_batch = list(dict.fromkeys(addresses))[index : index + 20]
+                    common = {"fromBlock": hex(start), "toBlock": hex(latest), "address": token_batch}
+                    incoming, outgoing = await asyncio.gather(
+                        self._rpc(session, url, "eth_getLogs", [{**common, "topics": [TRANSFER_TOPIC, None, wallet_topics]}]),
+                        self._rpc(session, url, "eth_getLogs", [{**common, "topics": [TRANSFER_TOPIC, wallet_topics]}]),
+                    )
+                    for log in incoming or []:
+                        key = f"{chain}:{normalise_address(log.get('address'))}"
+                        topics = log.get("topics") or []
+                        source = _address_from_topic(topics[1] if len(topics) > 1 else None)
+                        recipient = _address_from_topic(topics[2] if len(topics) > 2 else None)
+                        if source == pair_by_key.get(key) and recipient in wallets:
+                            buys_by_key[key].add(recipient)
+                    for log in outgoing or []:
+                        key = f"{chain}:{normalise_address(log.get('address'))}"
+                        topics = log.get("topics") or []
+                        sender = _address_from_topic(topics[1] if len(topics) > 1 else None)
+                        recipient = _address_from_topic(topics[2] if len(topics) > 2 else None)
+                        if recipient == pair_by_key.get(key) and sender in wallets:
+                            sells_by_key[key].add(sender)
+                state.set_cursor(cursor_key, str(latest))
+                state.mark_feed_success(f"smart-wallets:{chain}", len(addresses))
+            except Exception as error:
+                state.mark_feed_error(f"smart-wallets:{chain}", error)
+                log_feed_error(f"smart-wallets:{chain}", error, (self.config.gmgn_api_key,))
+                for key in list(buys_by_key):
+                    if key.startswith(chain + ":"):
+                        del buys_by_key[key]
+                for key in list(sells_by_key):
+                    if key.startswith(chain + ":"):
+                        del sells_by_key[key]
+                if chain == "base":
+                    raise
         keys = set(buys_by_key) | set(sells_by_key)
         return {
             key: {

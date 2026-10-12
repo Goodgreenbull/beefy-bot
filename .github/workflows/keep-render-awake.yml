@@ -28,6 +28,9 @@ jobs:
               if printf '%s' "$health" | jq -e '
                 .bot == "ok" and .scanner == "running" and .scanner_cycle_fresh == true
                 and (.wallet_discovery == "inactive" or .wallet_discovery == "healthy")
+                and .feed_errors["platform-launches:base"] == null
+                and .feed_errors["rpc-pairs:base"] == null
+                and .feed_errors["smart-wallets"] == null
                 and .telegram_delivery != "error"
               ' >/dev/null; then
                 exit 0

@@ -55,6 +55,9 @@ jobs:
                 .bot == "ok" and .scanner == "running"
                 and .release == $release and .last_cycle_at != null
                 and (.wallet_discovery == "inactive" or .wallet_discovery == "healthy")
+                and .feed_errors["platform-launches:base"] == null
+                and .feed_errors["rpc-pairs:base"] == null
+                and .feed_errors["smart-wallets"] == null
               ' >/dev/null; then
                 exit 0
               fi
