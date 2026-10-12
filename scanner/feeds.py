@@ -420,8 +420,10 @@ class GMGNReadOnlyFeed:
         }
         async with self._request_lock:
             elapsed = asyncio.get_running_loop().time() - self._last_request_at
-            if elapsed < 0.08:
-                await asyncio.sleep(0.08 - elapsed)
+            # Rank/trenches routes consume weighted capacity. Leave enough
+            # space for a shared free key instead of bursting between routes.
+            if elapsed < 1.0:
+                await asyncio.sleep(1.0 - elapsed)
             request = session.post if method == "POST" else session.get
             kwargs: dict[str, Any] = {"params": params, "headers": headers}
             if body is not None:
