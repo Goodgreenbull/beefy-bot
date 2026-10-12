@@ -22,6 +22,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from scanner import ScannerConfig, ScannerService, SQLiteState
 from scanner.alerts import format_alert, format_protect_alert, format_wallet_discovery_alert
 from scanner.models import Candidate, MarketSnapshot, ScoreResult
+from scanner.health import public_diagnostics
 
 TOKEN             = os.getenv("BOT_TOKEN")
 ADMIN_USERNAME    = os.getenv("ADMIN_USERNAME", "BeefytheBull")
@@ -930,6 +931,7 @@ async def health():
     return {
         "bot": "ok",
         "scanner": "running" if scanner_config.enabled else "disabled",
+        **public_diagnostics(status, scanner_config.interval_seconds),
         "release": release,
         "last_cycle_at": status.get("last_cycle_at"),
         "gmgn_candidates": status.get("gmgn_candidates", 0),
@@ -1009,6 +1011,21 @@ async def on_startup():
             send_wallet_discovery_alert,
         )
         await scanner_service.start()
+        if os.getenv("SCANNER_RECOVERY_TEST", "false").lower() == "true":
+            try:
+                if not scanner_config.alert_chat_id:
+                    raise RuntimeError("No alert destination configured")
+                await application.bot.send_message(
+                    chat_id=telegram_chat_target(scanner_config.alert_chat_id),
+                    text=("🧪 Beefybot recovery test\n\n"
+                          "Telegram alert delivery is working. The scanner is restarting "
+                          "with its repaired Base connection. This is a test, not a trading signal."),
+                )
+                scanner_state.mark_feed_success("telegram-recovery", 1)
+                print("✅ Recovery test delivered to configured signal destination", flush=True)
+            except Exception as error:
+                scanner_state.mark_feed_error("telegram-recovery", error)
+                print(f"⚠️ Recovery test failed: {telegram_delivery_diagnosis(error)}", flush=True)
         scheduler.add_job(
             scanner_service.run_cycle,
             "interval",

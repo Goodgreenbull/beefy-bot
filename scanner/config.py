@@ -23,11 +23,6 @@ ROBINHOOD_QUOTES = {
     "0x5fc5360d0400a0fd4f2af552add042d716f1d168",  # USDG
 }
 
-# GMGN and Base publish this credential for read-only market intelligence.
-# It cannot sign, swap, place orders, or access a user wallet. Operators can
-# override it with their own read-only key without changing source code.
-GMGN_PUBLIC_READ_ONLY_KEY = "gmgn_basesolbscethmonadtron"
-
 # Verified Base factory deployments. Generic event signatures are only trusted
 # when the emitting contract is explicitly allowlisted.
 BASE_DEX_FACTORIES = {
@@ -104,7 +99,8 @@ class ScannerConfig:
     bankr_url: str = "https://api.bankr.bot/token-launches"
     flaunch_url: str = "https://data.flayerlabs.xyz/tokens"
     gecko_networks: tuple[str, ...] = ("base",)
-    base_rpc_url: str = "https://mainnet.base.org"
+    base_rpc_url: str = "https://8453.rpc.thirdweb.com"
+    base_rpc_fallback_urls: tuple[str, ...] = ("https://8453.rpc.thirdweb.com", "https://mainnet.base.org")
     robinhood_rpc_url: str = "https://rpc.mainnet.chain.robinhood.com"
     rpc_lookback_blocks: int = 1_800
     rpc_max_block_span: int = 1_800
@@ -116,7 +112,7 @@ class ScannerConfig:
     max_flow_checks_per_cycle: int = 12
     max_robinhood_market_checks_per_cycle: int = 18
     gmgn_enabled: bool = True
-    gmgn_api_key: str = GMGN_PUBLIC_READ_ONLY_KEY
+    gmgn_api_key: str = ""
     gmgn_candidate_limit: int = 80
     gmgn_max_age_hours: int = 24
     gmgn_base_platforms: tuple[str, ...] = (
@@ -212,7 +208,10 @@ class ScannerConfig:
             bankr_url=os.getenv("BANKR_LAUNCH_URL", "https://api.bankr.bot/token-launches"),
             flaunch_url=os.getenv("FLAUNCH_TOKEN_URL", "https://data.flayerlabs.xyz/tokens"),
             gecko_networks=_csv("GECKOTERMINAL_NETWORKS", "base"),
-            base_rpc_url=os.getenv("BASE_RPC_URL", "https://mainnet.base.org"),
+            base_rpc_url=os.getenv("BASE_RPC_URL", "https://8453.rpc.thirdweb.com"),
+            base_rpc_fallback_urls=tuple(part.strip() for part in os.getenv(
+                "BASE_RPC_FALLBACK_URLS", "https://8453.rpc.thirdweb.com,https://mainnet.base.org"
+            ).split(",") if part.strip()),
             robinhood_rpc_url=os.getenv("ROBINHOOD_RPC_URL", "https://rpc.mainnet.chain.robinhood.com"),
             rpc_lookback_blocks=_int("SCANNER_RPC_LOOKBACK_BLOCKS", 1_800),
             rpc_max_block_span=_int("SCANNER_RPC_MAX_BLOCK_SPAN", 1_800),
@@ -227,8 +226,8 @@ class ScannerConfig:
             ),
             gmgn_enabled=_bool("SCANNER_GMGN_ENABLED", True),
             gmgn_api_key=(
-                os.getenv("GMGN_API_KEY", GMGN_PUBLIC_READ_ONLY_KEY).strip()
-                or GMGN_PUBLIC_READ_ONLY_KEY
+                os.getenv("GMGN_API_KEY", "").strip()
+                or os.getenv("GMGN_PUBLIC_READ_ONLY_KEY", "").strip()
             ),
             gmgn_candidate_limit=max(10, min(150, _int("SCANNER_GMGN_CANDIDATE_LIMIT", 80))),
             gmgn_max_age_hours=max(1, min(168, _int("SCANNER_GMGN_MAX_AGE_HOURS", 24))),

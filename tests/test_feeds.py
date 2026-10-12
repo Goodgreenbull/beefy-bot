@@ -709,7 +709,7 @@ class FeedTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_gmgn_feed_is_read_only_filters_junk_and_preserves_evidence(self):
         session = GMGNSession()
-        feed = GMGNReadOnlyFeed(ScannerConfig(gmgn_candidate_limit=20))
+        feed = GMGNReadOnlyFeed(ScannerConfig(gmgn_candidate_limit=20, gmgn_api_key="test-only"))
         with patch("scanner.feeds.asyncio.sleep", new=AsyncMock()):
             rows = await feed.discover(session, self.state)
 
@@ -740,7 +740,7 @@ class FeedTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_gmgn_access_rejection_stops_the_cycle_and_honours_cooldown(self):
         session = GMGNCooldownSession()
-        feed = GMGNReadOnlyFeed(ScannerConfig())
+        feed = GMGNReadOnlyFeed(ScannerConfig(gmgn_api_key="test-only"))
 
         with self.assertRaisesRegex(RuntimeError, "temporarily unavailable"):
             await feed.discover(session, self.state)

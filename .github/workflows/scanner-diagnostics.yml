@@ -3,7 +3,6 @@ name: Scanner Recovery Diagnostics
 on:
   push:
     branches: [fix/scanner-recovery-2026-10-12]
-    paths: [.github/workflows/scanner-diagnostics.yml]
   workflow_dispatch:
 
 permissions:
@@ -39,8 +38,10 @@ jobs:
               async def run(feed):
                   try:
                       rows = await asyncio.wait_for(feed.discover(service.session, state), 90)
+                      state.mark_feed_success(feed.name, len(rows))
                       print(feed.name, "OK", len(rows), flush=True)
                   except Exception as error:
+                      state.mark_feed_error(feed.name, error)
                       detail = re.sub(r"https?://\S+", "[provider URL]", str(error))
                       print(feed.name, "ERROR", type(error).__name__, detail[:200], flush=True)
               await asyncio.gather(*(run(feed) for feed in service.feeds))
@@ -72,6 +73,12 @@ jobs:
                       print("fallback full discovery", endpoint, "OK", len(found), flush=True)
                   except Exception as error:
                       print("fallback", endpoint, type(error).__name__, str(error)[:200], flush=True)
+              health = state.health()
+              for item in health:
+                  if item.get("last_error"):
+                      print("feed error", item["feed_name"], item["last_error"], flush=True)
+              wallet_health = next(item for item in health if item["feed_name"] == wallet.name)
               await service.stop()
+              assert not wallet_health.get("last_error"), "Wallet discovery must complete successfully"
           asyncio.run(main())
           PY

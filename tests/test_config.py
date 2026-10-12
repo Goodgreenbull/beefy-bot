@@ -43,3 +43,11 @@ class ScannerConfigTests(unittest.TestCase):
         with patch.dict(os.environ, values, clear=True):
             config = ScannerConfig.from_env()
         self.assertEqual(config.alert_chat_id, "admin-chat")
+
+    def test_gmgn_credentials_are_runtime_only_and_personal_override_wins(self):
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(ScannerConfig.from_env().gmgn_api_key, "")
+        with patch.dict(os.environ, {"GMGN_PUBLIC_READ_ONLY_KEY": "public-read-key"}, clear=True):
+            self.assertEqual(ScannerConfig.from_env().gmgn_api_key, "public-read-key")
+        with patch.dict(os.environ, {"GMGN_API_KEY": "personal-read-key", "GMGN_PUBLIC_READ_ONLY_KEY": "public-read-key"}, clear=True):
+            self.assertEqual(ScannerConfig.from_env().gmgn_api_key, "personal-read-key")
