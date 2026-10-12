@@ -58,7 +58,7 @@ jobs:
                           print("wallet getLogs span", span, type(error).__name__, str(error)[:200], flush=True)
               except Exception as error:
                   print("wallet RPC probe", type(error).__name__, str(error)[:200], flush=True)
-              for endpoint in ("https://base-rpc.publicnode.com", "https://public.1rpc.io/base"):
+              for endpoint in ("https://base.drpc.org", "https://8453.rpc.thirdweb.com"):
                   test = WalletSwapDiscoveryFeed(replace(config, base_rpc_url=endpoint))
                   try:
                       chain = await test._rpc(service.session, "eth_chainId", [])
