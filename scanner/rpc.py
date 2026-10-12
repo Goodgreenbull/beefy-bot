@@ -99,7 +99,42 @@ async def rpc_payload(session, url, payload, config, *, chain):
 
 
 async def rpc_call(session, url, method, params, config, *, chain):
+    if method == "eth_getLogs" and params and isinstance(params[0], dict):
+        query = params[0]
+        addresses = query.get("address")
+        try:
+            start = int(query["fromBlock"], 16)
+            end = int(query["toBlock"], 16)
+        except (KeyError, ValueError, TypeError):
+            start = end = None
+        # Public gateways can reject otherwise valid address arrays or wider
+        # ranges with only "invalid params". Keep the full window, query each
+        # address separately, and return only after every partition succeeds.
+        if isinstance(addresses, list) or (start is not None and end-start >= 300):
+            if isinstance(addresses, list) and not addresses:
+                raise ValueError("RPC log query has an empty address list")
+            windows = [(left, min(end, left+299)) for left in range(start, end+1, 300)] \
+                if start is not None and end >= start else [(None, None)]
+            results = []
+            for address in addresses if isinstance(addresses, list) else [addresses]:
+                for left, right in windows:
+                    partition = dict(query)
+                    if isinstance(addresses, list):
+                        partition["address"] = address
+                    if left is not None:
+                        partition.update(fromBlock=hex(left), toBlock=hex(right))
+                    body = await rpc_payload(session, url, {
+                        "jsonrpc": "2.0", "id": 1, "method": method, "params": [partition],
+                    }, config, chain=chain)
+                    rows = body["result"]
+                    if not isinstance(rows, list):
+                        raise RuntimeError("RPC log response is not a list")
+                    results.extend(rows)
+            return results
     body = await rpc_payload(session, url, {
         "jsonrpc": "2.0", "id": 1, "method": method, "params": params,
     }, config, chain=chain)
-    return body["result"]
+    result = body["result"]
+    if method == "eth_getLogs" and not isinstance(result, list):
+        raise RuntimeError("RPC log response is not a list")
+    return result

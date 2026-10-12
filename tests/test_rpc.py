@@ -88,3 +88,26 @@ class RpcRecoveryTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(ValueError):
             await rpc_call(session, PRIMARY, "eth_sendRawTransaction", [], self.config, chain="base")
         self.assertEqual(session.calls, [])
+
+    async def test_log_partitions_cover_each_address_and_entire_window(self):
+        self.config.base_rpc_fallback_urls = ()
+        session = ScriptedSession([FakeResponse({"result": [{"part": n}]}) for n in range(6)])
+        query = {"fromBlock": "0x0", "toBlock": "0x258", "address": ["first", "second"],
+                 "topics": [["launch-a", "launch-b"]]}
+        rows = await rpc_call(session, PRIMARY, "eth_getLogs", [query], self.config, chain="base")
+        self.assertEqual(len(rows), 6)
+        windows = {address: [] for address in query["address"]}
+        for _, payload in session.calls:
+            part = payload["params"][0]
+            windows[part["address"]].append((int(part["fromBlock"], 16), int(part["toBlock"], 16)))
+            self.assertEqual(part["topics"], query["topics"])
+        self.assertEqual(windows, {address: [(0, 299), (300, 599), (600, 600)] for address in windows})
+        self.assertEqual(query["address"], ["first", "second"])
+
+    async def test_failed_log_partition_cannot_return_partial_success(self):
+        self.config.base_rpc_fallback_urls = ()
+        session = ScriptedSession([FakeResponse({"result": [{"found": True}]}), FakeResponse({}, 400)])
+        with self.assertRaises(RuntimeError):
+            await rpc_call(session, PRIMARY, "eth_getLogs", [{
+                "fromBlock": "0x1", "toBlock": "0x2", "address": ["first", "second"],
+            }], self.config, chain="base")
