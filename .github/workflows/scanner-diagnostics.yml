@@ -58,6 +58,20 @@ jobs:
                           print("wallet getLogs span", span, type(error).__name__, str(error)[:200], flush=True)
               except Exception as error:
                   print("wallet RPC probe", type(error).__name__, str(error)[:200], flush=True)
+              for endpoint in ("https://base-rpc.publicnode.com", "https://public.1rpc.io/base"):
+                  test = WalletSwapDiscoveryFeed(replace(config, base_rpc_url=endpoint))
+                  try:
+                      chain = await test._rpc(service.session, "eth_chainId", [])
+                      print("fallback", endpoint, "chain", chain, flush=True)
+                      latest = int(await test._rpc(service.session, "eth_blockNumber", []), 16)-2
+                      rows = await test._rpc(service.session, "eth_getLogs", [{
+                          "fromBlock": hex(latest-299), "toBlock": hex(latest),
+                          "topics": [TRANSFER_TOPIC, None, topics]}])
+                      print("fallback wallet query", endpoint, "OK", len(rows), flush=True)
+                      found = await asyncio.wait_for(test.discover(service.session, state), 90)
+                      print("fallback full discovery", endpoint, "OK", len(found), flush=True)
+                  except Exception as error:
+                      print("fallback", endpoint, type(error).__name__, str(error)[:200], flush=True)
               await service.stop()
           asyncio.run(main())
           PY
