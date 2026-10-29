@@ -74,7 +74,11 @@ async def rpc_payload(session, url, payload, config, *, chain):
                         await asyncio.sleep(0.20)
                     async with session.post(endpoint, json=payload) as response:
                         pool["last_at"] = time.monotonic()
-                        if response.status == 429 or response.status >= 500:
+                        # Access/quota failures belong to this provider. A
+                        # separately configured, chain-verified endpoint may
+                        # still serve the same read. Keep malformed requests
+                        # and contract reverts outside this retry path.
+                        if response.status in {401, 403, 408, 429} or response.status >= 500:
                             raise _Unavailable(f"RPC HTTP {response.status}")
                         if response.status >= 400:
                             raise RuntimeError(f"RPC HTTP {response.status}")
