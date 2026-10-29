@@ -474,6 +474,10 @@ class FlowSession:
                         "transactionHash": "0xsell0",
                     }
                 ]
+            query = json["params"][0]
+            start = int(query["fromBlock"], 16)
+            end = int(query["toBlock"], 16)
+            rows = [row for row in rows if start <= int(row["blockNumber"], 16) <= end]
             return FakeResponse({"jsonrpc": "2.0", "id": 1, "result": rows})
         raise AssertionError(f"Unexpected method {json['method']}")
 
