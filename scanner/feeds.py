@@ -2186,6 +2186,7 @@ class OnchainFlowEnricher:
             return {}
         async with self._semaphore:
             latest = int(await self._rpc(session, url, "eth_blockNumber", []), 16)
+            flow_captured_at = datetime.now(timezone.utc).isoformat()
             start = max(0, latest - self.config.flow_15m_blocks + 1)
             pair_topic = "0x" + pair.removeprefix("0x").rjust(64, "0")
             common = {
@@ -2268,6 +2269,7 @@ class OnchainFlowEnricher:
             "buy_events_15m": len(buy_logs),
             "sell_events_15m": len(sell_logs),
             "flow_checked": True,
+            "flow_captured_at": flow_captured_at,
         }
 
 
@@ -2544,6 +2546,7 @@ class SmartWalletMonitor:
                 "smart_wallet_buys": float(len(buys_by_key[key])),
                 "smart_wallet_sells": float(len(sells_by_key[key])),
                 "smart_wallet_net_usd": 0.0,
+                "captured_at": datetime.now(timezone.utc).isoformat(),
             }
             for key in keys
         }

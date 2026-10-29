@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import time
 from collections import deque
 from datetime import datetime, timezone
@@ -37,6 +38,7 @@ from .scoring import SignalScorer
 from .state import SQLiteState
 from .wallet_discovery import WalletSwapDiscoveryFeed
 from .health import log_feed_error
+from .quality import apply_quality_trial
 
 
 AlertCallback = Callable[[Candidate, MarketSnapshot, ScoreResult], Awaitable[None]]
@@ -278,6 +280,17 @@ class ScannerService:
     ) -> None:
         overlay = overlay or {}
         wallet_signal = wallet_signal or {}
+        # Only our pool monitor supplies these counts. Overlay
+        # counts and GMGN tags remain separate from verified wallet entries.
+        snapshot.raw["verified_wallet_flow"] = {
+            "buys": _integer(wallet_signal.get("smart_wallet_buys", 0)),
+            "sells": _integer(wallet_signal.get("smart_wallet_sells", 0)),
+            "captured_at": wallet_signal.get("captured_at"),
+        }
+        snapshot.raw["social_checked"] = any(
+            key in overlay for key in ("exactCaMentions5m", "exact_ca_mentions_5m")
+        )
+        snapshot.raw["social_evidence"] = overlay.get("socialEvidence", [])
         snapshot.social_velocity = _number(
             overlay.get("socialVelocity", overlay.get("social_velocity", snapshot.social_velocity)),
             snapshot.social_velocity,
@@ -436,6 +449,8 @@ class ScannerService:
             snapshot.buys_1h = _integer(flow.get("buy_events_15m"), 0)
             snapshot.sells_1h = _integer(flow.get("sell_events_15m"), 0)
         snapshot.flow_checked = bool(flow.get("flow_checked", snapshot.flow_checked))
+        if flow.get("flow_captured_at"):
+            snapshot.raw["flow_captured_at"] = flow["flow_captured_at"]
 
     async def run_cycle(self) -> dict:
         if self.lock.locked():
@@ -733,6 +748,16 @@ class ScannerService:
                     strong_alert_score=thresholds["buy"],
                     scout_alert_score=thresholds["scout"],
                 )
+                wallet_evidence = snapshot.raw.setdefault("verified_wallet_flow", {})
+                wallet_evidence["paid_swap_verified"] = bool(
+                    "wallet-swap" in candidate.source.split(",")
+                    and candidate.metadata.get("wallet_discovery_factory_verified") is True
+                    and candidate.metadata.get("wallet_discovery_proof") == "v2-v3-registered-pool"
+                    and re.fullmatch(r"0x[0-9a-fA-F]{64}", str(
+                        candidate.metadata.get("wallet_discovery_tx", "")))
+                )
+                wallet_evidence["swap_observed_at"] = candidate.metadata.get("wallet_discovery_at")
+                result = apply_quality_trial(snapshot, history, result)
                 self.state.add_snapshot(candidate.key, snapshot)
                 candidate.metadata["first_detected_market_cap_usd"] = (
                     self.state.first_detected_market_cap(candidate.key)
@@ -782,12 +807,6 @@ class ScannerService:
                     )
                 ):
                     try:
-                        if result.signal != "PULSE":
-                            try:
-                                self.state.apply_target_estimate(candidate, snapshot, result)
-                                self.state.mark_feed_success("target-model", 1)
-                            except Exception as error:
-                                self.state.mark_feed_error("target-model", error)
                         await self.alert_callback(candidate, snapshot, result)
                         self.state.mark_feed_success("telegram-alerts", 1)
                         alert_id = self.state.record_alert(candidate.key, result, snapshot)
@@ -860,5 +879,6 @@ class ScannerService:
             "base_wallets_monitored": len(wallet_feed.tracked_wallets(self.state)) if wallet_feed else 0,
             "near_misses": self.state.near_misses(),
             "screening_report": self.state.screening_report(),
+            "quality_trial": self.state.quality_trial_report(),
             "feeds": self.state.health(),
         }

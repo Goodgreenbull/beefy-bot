@@ -10,11 +10,19 @@ from scanner.state import SQLiteState
 TOKEN = "0x8888888888888888888888888888888888888888"
 
 
+def paid_swap_metadata():
+    return {"wallet_discovery_factory_verified": True,
+            "wallet_discovery_proof": "v2-v3-registered-pool",
+            "wallet_discovery_tx": "0x" + "a" * 64,
+            "wallet_discovery_at": datetime.now(timezone.utc).isoformat()}
+
+
 class FakeFeed:
     name = "fake-launches"
 
     async def discover(self, session, state):
-        return [Candidate(chain="base", token_address=TOKEN, source="bankr", symbol="TEST")]
+        return [Candidate(chain="base", token_address=TOKEN, source="bankr,wallet-swap",
+                          symbol="TEST", metadata=paid_swap_metadata())]
 
 
 class WalletDiscoveryFakeFeed:
@@ -38,6 +46,16 @@ class NoMarketEnricher:
 class NoWalletSignals:
     async def collect(self, session, state, candidates):
         return {}
+
+
+class VerifiedWalletSignals:
+    async def collect(self, session, state, candidates):
+        return {candidate.key: {"smart_wallet_buys": 2, "smart_wallet_sells": 0,
+                "captured_at": datetime.now(timezone.utc).isoformat()}
+                for candidate in candidates}
+
+    async def observe_early_buyers(self, session, candidate, snapshot):
+        return set()
 
 
 class FakeEnricher:
@@ -67,12 +85,13 @@ class FakeEnricher:
                     "cannot_buy": False,
                     "cannot_sell": False,
                     "sell_tax": 0,
+                    "buy_tax": 0,
                     "risk_level": 0,
                     "open_source": True,
                 }
             },
-            unique_buyers_5m=10,
-            unique_buyers_15m=16,
+            unique_buyers_5m=14,
+            unique_buyers_15m=20,
             unique_sellers_5m=2,
             unique_sellers_15m=4,
             net_new_wallets_5m=8,
@@ -91,8 +110,10 @@ class RankedFeed:
 
     async def discover(self, session, state):
         return [
-            Candidate(chain="base", token_address=f"0x{901:040x}", source="bankr", symbol="LOW"),
-            Candidate(chain="base", token_address=f"0x{902:040x}", source="bankr", symbol="HIGH"),
+            Candidate(chain="base", token_address=f"0x{901:040x}", source="bankr,wallet-swap",
+                      symbol="LOW", metadata=paid_swap_metadata()),
+            Candidate(chain="base", token_address=f"0x{902:040x}", source="bankr,wallet-swap",
+                      symbol="HIGH", metadata=paid_swap_metadata()),
         ]
 
 
@@ -111,6 +132,33 @@ class FixedRankScorer:
 
 
 class ScannerServiceTests(unittest.IsolatedAsyncioTestCase):
+    async def test_pulse_is_retained_for_research_without_telegram_delivery(self):
+        state = SQLiteState(":memory:")
+        alerts = []
+
+        async def capture(candidate, market, score):
+            alerts.append(candidate.key)
+
+        class PulseScorer:
+            def score(self, candidate, snapshot, history, **kwargs):
+                return ScoreResult(52, "IGNITION", "PULSE", True, 0, {}, [], [], "test")
+
+        service = ScannerService(ScannerConfig(warmup_cycles=0), state, capture)
+        service.feeds = [FakeFeed()]
+        service.enricher = FakeEnricher()
+        service.smart_wallet_monitor = VerifiedWalletSignals()
+        service.scorer = PulseScorer()
+        try:
+            status = await service.run_cycle()
+            saved = state.recent_snapshots(f"base:{TOKEN}")[0].raw["quality_trial"]
+            self.assertTrue(saved["baseline_eligible"])
+            self.assertFalse(saved["main_eligible"])
+            self.assertEqual(status["quality_trial"]["research_only_24h"], 1)
+            self.assertEqual(status["alerts"], 0)
+            self.assertEqual(alerts, [])
+        finally:
+            await service.stop()
+
     async def test_wallet_discovery_alert_precedes_enrichment_and_deduplicates(self):
         state = SQLiteState(":memory:")
         seen = []
@@ -225,6 +273,7 @@ class ScannerServiceTests(unittest.IsolatedAsyncioTestCase):
         service = ScannerService(config, state, capture)
         service.feeds = [FakeFeed()]
         service.enricher = FakeEnricher()
+        service.smart_wallet_monitor = VerifiedWalletSignals()
         try:
             first = await service.run_cycle()
             second = await service.run_cycle()
@@ -251,6 +300,7 @@ class ScannerServiceTests(unittest.IsolatedAsyncioTestCase):
         service = ScannerService(config, state, capture)
         service.feeds = [RankedFeed()]
         service.enricher = RankedEnricher()
+        service.smart_wallet_monitor = VerifiedWalletSignals()
         service.scorer = FixedRankScorer()
         try:
             status = await service.run_cycle()
@@ -271,6 +321,7 @@ class ScannerServiceTests(unittest.IsolatedAsyncioTestCase):
         service = ScannerService(config, state, capture)
         service.feeds = [FakeFeed()]
         service.enricher = FakeEnricher()
+        service.smart_wallet_monitor = VerifiedWalletSignals()
         try:
             first = await service.run_cycle()
             second = await service.run_cycle()
@@ -285,8 +336,9 @@ class ScannerServiceTests(unittest.IsolatedAsyncioTestCase):
                         Candidate(
                             chain="base",
                             token_address=new_token,
-                            source="bankr",
+                            source="bankr,wallet-swap",
                             symbol="NEW",
+                            metadata=paid_swap_metadata(),
                         )
                     ]
 
