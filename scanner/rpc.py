@@ -25,7 +25,9 @@ def _validate(body):
             error = row["error"]
             message = str(error.get("message", "RPC error"))
             if error.get("code") in {-32005, -32016} or any(
-                word in message.lower() for word in ("rate limit", "too many requests", "overloaded")
+                word in message.lower() for word in (
+                    "rate limit", "too many requests", "overloaded", "request limit reached",
+                )
             ):
                 raise _Unavailable("RPC rate limited")
             raise RuntimeError(message)
@@ -41,12 +43,23 @@ async def rpc_payload(session, url, payload, config, *, chain):
                "eth_getBlockByNumber", "eth_getTransactionByHash", "eth_getTransactionReceipt"}
     if any(row.get("method") not in allowed for row in requests):
         raise ValueError("Scanner RPC transport accepts read methods only")
+    # Providers count methods inside a JSON-RPC batch against their quota.
+    # Bound batches before entering the shared lock; each chunk still receives
+    # the normal chain verification, retry, ID validation and pacing rules.
+    if isinstance(payload, list) and len(payload) > 10:
+        responses = []
+        for offset in range(0, len(payload), 10):
+            responses.extend(await rpc_payload(
+                session, url, payload[offset:offset + 10], config, chain=chain,
+            ))
+        return responses
     endpoints = tuple(dict.fromkeys((url, *(
         config.base_rpc_fallback_urls if chain == "base" else ()
     ))))
     pools = _pools.setdefault(session, {})
     pool = pools.setdefault(endpoints, {
-        "lock": asyncio.Lock(), "last_at": 0.0, "cooldowns": {}, "verified": set(),
+        "lock": asyncio.Lock(), "last_at": 0.0, "spacing": 0.20,
+        "cooldowns": {}, "verified": set(),
     })
     async with pool["lock"]:
         last_error = _Unavailable("RPC providers unavailable")
@@ -57,7 +70,7 @@ async def rpc_payload(session, url, payload, config, *, chain):
         for endpoint in available:
             for attempt in range(2):
                 try:
-                    delay = 0.20 - (time.monotonic() - pool["last_at"])
+                    delay = pool["spacing"] - (time.monotonic() - pool["last_at"])
                     if delay > 0:
                         await asyncio.sleep(delay)
                     if endpoint != url and endpoint not in pool["verified"]:
@@ -65,6 +78,7 @@ async def rpc_payload(session, url, payload, config, *, chain):
                             "jsonrpc": "2.0", "id": 0, "method": "eth_chainId", "params": [],
                         }) as response:
                             pool["last_at"] = time.monotonic()
+                            pool["spacing"] = 0.20
                             if response.status >= 400:
                                 raise _Unavailable(f"RPC chain verification HTTP {response.status}")
                             body = _validate(await response.json(content_type=None))
@@ -74,6 +88,7 @@ async def rpc_payload(session, url, payload, config, *, chain):
                         await asyncio.sleep(0.20)
                     async with session.post(endpoint, json=payload) as response:
                         pool["last_at"] = time.monotonic()
+                        pool["spacing"] = 0.20 * len(requests)
                         # Access/quota failures belong to this provider. A
                         # separately configured, chain-verified endpoint may
                         # still serve the same read. Keep malformed requests
