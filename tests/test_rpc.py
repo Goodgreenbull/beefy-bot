@@ -5,7 +5,7 @@ from scanner.config import ScannerConfig
 from scanner.rpc import rpc_call, rpc_payload
 from scanner.state import SQLiteState
 from scanner.wallet_discovery import WalletSwapDiscoveryFeed
-from scanner.feeds import SmartWalletMonitor, TRANSFER_TOPIC
+from scanner.feeds import OnchainFlowEnricher, SmartWalletMonitor, TRANSFER_TOPIC
 from scanner.models import Candidate
 from tests.test_feeds import FakeResponse
 
@@ -58,6 +58,53 @@ class RpcRecoveryTests(unittest.IsolatedAsyncioTestCase):
         ])
         with self.assertRaisesRegex(RuntimeError, "not Base mainnet"):
             await rpc_call(session, PRIMARY, "eth_blockNumber", [], self.config, chain="base")
+
+    async def test_provider_access_errors_use_verified_fallback(self):
+        for status in (401, 403, 408):
+            with self.subTest(status=status):
+                session = ScriptedSession([
+                    FakeResponse({}, status), FakeResponse({}, status),
+                    FakeResponse({"result": "0x2105"}),
+                    FakeResponse({"result": "0x64"}),
+                ])
+                result = await rpc_call(
+                    session, PRIMARY, "eth_blockNumber", [], self.config, chain="base"
+                )
+                self.assertEqual(result, "0x64")
+                self.assertEqual(session.calls[-2][1]["method"], "eth_chainId")
+                self.assertEqual(session.calls[-1][0], FALLBACK)
+
+    async def test_flow_logs_use_partitioned_transport(self):
+        self.config.base_rpc_fallback_urls = ()
+        session = ScriptedSession([
+            FakeResponse({"result": [{"blockNumber": "0x0"}]}),
+            FakeResponse({"result": [{"blockNumber": "0x1c1"}]}),
+        ])
+        query = {"address": "0x" + "3" * 40,
+                 "fromBlock": "0x0", "toBlock": "0x1c1",
+                 "topics": [TRANSFER_TOPIC]}
+        result = await OnchainFlowEnricher(self.config)._rpc(
+            session, PRIMARY, "eth_getLogs", [query]
+        )
+        self.assertEqual(len(result), 2)
+        windows = [(int(call[1]["params"][0]["fromBlock"], 16),
+                    int(call[1]["params"][0]["toBlock"], 16))
+                   for call in session.calls]
+        self.assertEqual(windows, [(0, 299), (300, 449)])
+
+    async def test_flow_log_partition_failure_cannot_return_partial_success(self):
+        self.config.base_rpc_fallback_urls = ()
+        session = ScriptedSession([
+            FakeResponse({"result": [{"blockNumber": "0x0"}]}),
+            FakeResponse({}, 400),
+        ])
+        with self.assertRaisesRegex(RuntimeError, "HTTP 400"):
+            await OnchainFlowEnricher(self.config)._rpc(
+                session, PRIMARY, "eth_getLogs", [{
+                    "address": "0x" + "3" * 40,
+                    "fromBlock": "0x0", "toBlock": "0x1c1",
+                }]
+            )
 
     async def test_reverted_contract_is_not_retried_on_another_provider(self):
         session = ScriptedSession([FakeResponse({"error": {"code": -32000, "message": "execution reverted"}})])
