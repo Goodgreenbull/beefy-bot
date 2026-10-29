@@ -2138,15 +2138,10 @@ class OnchainFlowEnricher:
         method: str,
         params: list[Any],
     ) -> Any:
-        payload = await self._post_rpc(
-            session,
-            url,
-            {"jsonrpc": "2.0", "id": 1, "method": method, "params": params},
-            "on-chain flow RPC",
-        )
-        if payload.get("error"):
-            raise RuntimeError(payload["error"].get("message", "on-chain flow RPC error"))
-        return payload.get("result")
+        # Reuse the shared log partitioning as well as provider recovery.
+        # Calling rpc_payload directly bypasses the bounded log windows.
+        chain = "base" if url == self.config.base_rpc_url else "robinhood"
+        return await rpc_call(session, url, method, params, self.config, chain=chain)
 
     async def _transaction_senders(
         self,
