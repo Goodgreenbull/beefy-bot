@@ -103,6 +103,8 @@ class SQLiteState:
             );
             CREATE INDEX IF NOT EXISTS idx_snapshots_candidate_time
                 ON snapshots(candidate_key, captured_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_snapshots_captured
+                ON snapshots(captured_at DESC);
 
             CREATE TABLE IF NOT EXISTS alerts (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1393,6 +1395,7 @@ class SQLiteState:
             "buy": float(config.strong_alert_score),
             "samples": 0,
             "calibrated": False,
+            "sample_ready": False,
         }
         if not getattr(config, "auto_calibrate", False):
             return defaults
@@ -1410,8 +1413,27 @@ class SQLiteState:
         sample_count = len(rows)
         defaults["samples"] = sample_count
         minimum = int(getattr(config, "calibration_min_samples", 30))
-        defaults["calibrated"] = sample_count >= minimum
+        defaults["sample_ready"] = sample_count >= minimum
+        # Counting observations does not fit or validate a trading policy.
+        defaults["calibrated"] = False
         return defaults
+
+    def quality_trial_report(self) -> dict[str, Any]:
+        """Aggregate the research decisions already retained in snapshots."""
+        cutoff = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
+        row = self.connection.execute(
+            """
+            SELECT COUNT(*) AS evaluated,
+                   SUM(json_extract(raw_json, '$.quality_trial.baseline_eligible') = 1) AS baseline,
+                   SUM(json_extract(raw_json, '$.quality_trial.main_eligible') = 1) AS main
+            FROM snapshots WHERE captured_at >= ?
+              AND json_extract(raw_json, '$.quality_trial.version') = 'evidence-trial-v1'
+            """, (cutoff,),
+        ).fetchone()
+        baseline, main = int(row["baseline"] or 0), int(row["main"] or 0)
+        return {"version": "evidence-trial-v1", "evaluations_24h": int(row["evaluated"]),
+                "baseline_eligible_24h": baseline, "main_eligible_24h": main,
+                "research_only_24h": baseline - main}
 
     def get_cursor(self, key: str) -> str | None:
         row = self.connection.execute("SELECT cursor_value FROM cursors WHERE cursor_key = ?", (key,)).fetchone()

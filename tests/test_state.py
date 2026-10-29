@@ -302,7 +302,7 @@ class SQLiteStateTests(unittest.TestCase):
         self.assertIn(keys[4], active_keys)
         self.assertIn(keys[5], active_keys)
 
-    def test_threshold_calibration_waits_for_a_real_sample_then_raises_quality_bar(self):
+    def test_sample_count_does_not_claim_a_calibrated_policy(self):
         config = ScannerConfig(calibration_min_samples=30)
         before = self.state.calibrated_thresholds(config)
         self.assertFalse(before["calibrated"])
@@ -342,7 +342,8 @@ class SQLiteStateTests(unittest.TestCase):
         self.state.connection.commit()
 
         calibrated = self.state.calibrated_thresholds(config)
-        self.assertTrue(calibrated["calibrated"])
+        self.assertFalse(calibrated["calibrated"])
+        self.assertTrue(calibrated["sample_ready"])
         self.assertEqual(calibrated["samples"], 40)
         self.assertEqual(calibrated["scout"], 60)
         self.assertEqual(calibrated["watch"], 70)

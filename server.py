@@ -509,6 +509,7 @@ async def signalstats_command(update: Update, context: ContextTypes.DEFAULT_TYPE
     counts = report.get("outcome_counts", {})
     signals = report.get("signals", {})
     wallets = status.get("smart_wallet_report", {})
+    quality = status.get("quality_trial", {})
 
     def market_cap_text(value):
         if value is None:
@@ -524,6 +525,11 @@ async def signalstats_command(update: Update, context: ContextTypes.DEFAULT_TYPE
         "📊 Beefy Signal Results",
         "",
         f"Tracked alerts: {report.get('tracked_alerts', 0)}",
+        (
+            f"Quality trial (24h evaluations): baseline {quality.get('baseline_eligible_24h', 0)} · "
+            f"main eligible {quality.get('main_eligible_24h', 0)} · "
+            f"research only {quality.get('research_only_24h', 0)}"
+        ),
         (
             "Outcomes: "
             f"15m {counts.get(15, 0)} · 1h {counts.get(60, 0)} · "
@@ -565,8 +571,8 @@ async def signalstats_command(update: Update, context: ContextTypes.DEFAULT_TYPE
                 f"{wallets.get('evaluated', 0)} evaluated · {wallets.get('qualified', 0)} qualified"
             ),
             (
-                f"Calibration: {status.get('calibration_samples', 0)}/"
-                f"{scanner_config.calibration_min_samples} completed 24h samples"
+                f"Historical samples: {status.get('calibration_samples', 0)} completed 24h; "
+                "fitted policy not available"
             ),
         ]
     )
@@ -943,6 +949,7 @@ async def health():
         "feeds_with_errors": status.get("errors", 0),
         "wallet_discovery": wallet_discovery_status,
         "base_wallets_monitored": status.get("base_wallets_monitored", 0),
+        "quality_trial": status.get("quality_trial", {}),
     }
 
 @app.route(WEBHOOK_PATH, methods=["POST"])

@@ -32,13 +32,13 @@ class AlertFormatTests(unittest.TestCase):
         self.assertIn("A&amp;B", message)
         self.assertIn("T&lt;ST", message)
         self.assertIn("Beefy ACTION", message)
-        self.assertIn("model upside", message)
+        self.assertNotIn("model upside", message)
         self.assertIn("8 unique buyers/5m", message)
         self.assertIn("MC first $40.0k · alert $50.0k", message)
         self.assertNotIn("Strong qualifying flow", message)
         self.assertIn("<b>CA:</b>", message)
-        self.assertIn("no auto-trading", message)
-        self.assertLess(len(message), 1_000)
+        self.assertIn("no auto-trading", message.lower())
+        self.assertLess(len(message), 1_200)
 
     def test_early_watch_uses_watch_verdict(self):
         candidate = Candidate(
@@ -62,7 +62,7 @@ class AlertFormatTests(unittest.TestCase):
         )
         message = format_alert(candidate, market, result)
         self.assertIn("Beefy SCOUT", message)
-        self.assertIn("1.2x model upside", message)
+        self.assertNotIn("model upside", message)
         self.assertIn("Upgrade trigger", message)
 
     def test_watch_summary_changes_for_a_pullback_setup(self):
@@ -86,10 +86,10 @@ class AlertFormatTests(unittest.TestCase):
         result = ScoreResult(77, "IGNITION", "ACTION", True, 0, {}, [], [], "flow fails")
         message = format_alert(candidate, market, result)
         self.assertIn("Beefy ACTION", message)
-        self.assertIn("model upside", message)
+        self.assertNotIn("model upside", message)
         self.assertNotIn("conviction is not high enough", message)
 
-    def test_alert_uses_history_aware_uncapped_target(self):
+    def test_trial_suppresses_even_legacy_history_aware_targets(self):
         candidate = Candidate(
             chain="base",
             token_address="0x2222222222222222222222222222222222222222",
@@ -120,9 +120,19 @@ class AlertFormatTests(unittest.TestCase):
             target_basis="24 comparable 24h outcomes + live liquidity/flow structure",
         )
         message = format_alert(candidate, market, result)
-        self.assertIn("10.4x model upside", message)
-        self.assertIn("[HIGH]", message)
-        self.assertIn("24 comparable 24h outcomes", message)
+        self.assertNotIn("10.4x", message)
+        self.assertNotIn("[HIGH]", message)
+        self.assertIn("historical comparison not validated", message)
+
+    def test_missing_data_is_unknown_and_proxy_is_not_an_execution_quote(self):
+        candidate = Candidate(chain="base", token_address="0x" + "1" * 40, source="gmgn")
+        market = MarketSnapshot(chain="base", token_address=candidate.token_address)
+        result = ScoreResult(65, "IGNITION", "SCOUT", True, 0, {}, [], [], "test")
+        message = format_alert(candidate, market, result)
+        self.assertIn("wallet flow unknown", message)
+        self.assertIn("exact-CA social unknown", message)
+        self.assertIn("£20 execution quote unverified", message)
+        self.assertNotIn("net wallets", message)
 
     def test_pulse_is_an_explicit_breadcrumb_without_a_price_target(self):
         candidate = Candidate(
