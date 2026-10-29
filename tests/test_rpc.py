@@ -31,7 +31,7 @@ class RpcRecoveryTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self.config = ScannerConfig(base_rpc_url=PRIMARY, base_rpc_fallback_urls=(FALLBACK,))
         self.sleep = patch("scanner.rpc.asyncio.sleep", new=AsyncMock())
-        self.sleep.start()
+        self.sleep_mock = self.sleep.start()
         self.addCleanup(self.sleep.stop)
 
     async def test_transient_throttle_recovers_without_fallback(self):
@@ -118,6 +118,52 @@ class RpcRecoveryTests(unittest.IsolatedAsyncioTestCase):
         payload = [{"id": n, "method": "eth_getBlockByNumber", "params": []} for n in (1, 2)]
         with self.assertRaisesRegex(RuntimeError, "missing request IDs"):
             await rpc_payload(session, PRIMARY, payload, self.config, chain="base")
+
+    async def test_live_request_limit_message_uses_verified_fallback(self):
+        limited = {"error": {"code": -32000,
+                             "message": "25/second request limit reached"}}
+        session = ScriptedSession([
+            FakeResponse(limited), FakeResponse(limited),
+            FakeResponse({"result": "0x2105"}), FakeResponse({"result": "0x64"}),
+        ])
+        result = await rpc_call(
+            session, PRIMARY, "eth_blockNumber", [], self.config, chain="base"
+        )
+        self.assertEqual(result, "0x64")
+        self.assertEqual(session.calls[-1][0], FALLBACK)
+
+    async def test_large_batches_are_bounded_and_paced_by_method_count(self):
+        self.config.base_rpc_fallback_urls = ()
+        payload = [{"id": n, "method": "eth_getTransactionByHash", "params": []}
+                   for n in range(60)]
+        session = ScriptedSession([
+            FakeResponse([{"id": n, "result": {}} for n in range(start, start + 10)])
+            for start in range(0, 60, 10)
+        ])
+        with patch("scanner.rpc.time.monotonic", return_value=0.0):
+            result = await rpc_payload(session, PRIMARY, payload, self.config, chain="base")
+        self.assertEqual({row["id"] for row in result}, set(range(60)))
+        self.assertEqual([len(call[1]) for call in session.calls], [10] * 6)
+        waits = [call.args[0] for call in self.sleep_mock.await_args_list]
+        self.assertGreaterEqual(sum(delay >= 2.0 for delay in waits), 5)
+
+    async def test_large_batch_failure_does_not_return_partial_results(self):
+        self.config.base_rpc_fallback_urls = ()
+        payload = [{"id": n, "method": "eth_call", "params": []} for n in range(11)]
+        session = ScriptedSession([
+            FakeResponse([{"id": n, "result": "0x0"} for n in range(10)]),
+            FakeResponse({}, 503), FakeResponse({}, 503),
+        ])
+        with self.assertRaisesRegex(RuntimeError, "HTTP 503"):
+            await rpc_payload(session, PRIMARY, payload, self.config, chain="base")
+
+    async def test_large_batch_rejects_write_before_any_request(self):
+        payload = [{"id": n, "method": "eth_call", "params": []} for n in range(10)]
+        payload.append({"id": 10, "method": "eth_sendRawTransaction", "params": []})
+        session = ScriptedSession([])
+        with self.assertRaises(ValueError):
+            await rpc_payload(session, PRIMARY, payload, self.config, chain="base")
+        self.assertEqual(session.calls, [])
 
     async def test_provider_failure_preserves_live_wallet_cursor(self):
         self.config.base_rpc_fallback_urls = ()
